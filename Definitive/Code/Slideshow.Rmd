@@ -1,0 +1,1790 @@
+---
+title: Effect of the 2021 Virginia Minimum Wage Hike on the Employment Level of Food
+  Service Workers
+author: "By Jacob Langley"
+date: "`r Sys.Date()`"
+output:
+  beamer_presentation: default
+  slidy_presentation: default
+  powerpoint_presentation: default
+---
+
+```{r dataset creation, echo=FALSE, message=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#examining the effects of Virginia's minimum wage hike in May of 2021 
+#on the employment level in the state using a difference in differences regression
+#using North Carolina as a control
+#and logistic and lasso regression for variable selection guidance 
+
+library(dplyr)
+library(tidyr)
+library(glmnet)
+library(knitr)
+library(stargazer)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+
+
+#importing employment data for food services industry first
+
+all_employment.2019 <- read.csv("Data/Employment/2019.q1-q4 445 NAICS 445 Food and beverage stores.csv")
+all_employment.2021 <- read.csv("Data/Employment/2021.q1-q4 445 NAICS 445 Food and beverage stores.csv")
+all_employment.2022 <- read.csv("Data/Employment/2022.q1-q1 445 NAICS 445 Food and beverage retailers.csv")
+
+keeps <- c("area_fips","own_code", "year", "qtr", "industry_title", "month1_emplvl", "month2_emplvl", "month3_emplvl")
+all_employment.2019 <- all_employment.2019[ , keeps, drop = T]
+all_employment.2021 <- all_employment.2021[ , keeps, drop = T]
+all_employment.2022 <- all_employment.2022[ , keeps, drop = T]
+
+#getting only the employment data for NC and VA
+
+
+
+employment2019 <- subset(all_employment.2019, area_fips > 37000 & area_fips < 38000 | area_fips > 51000 & area_fips < 52000)
+employment2021 <- subset(all_employment.2021, area_fips > 37000 & area_fips < 38000 | area_fips > 51000 & area_fips < 52000)
+employment2022 <- subset(all_employment.2022, area_fips > 37000 & area_fips < 38000 | area_fips > 51000 & area_fips < 52000)
+
+employment <- rbind(employment2019, employment2021)
+employment22 <- rbind(employment2019, employment2022)
+
+#own_code 5 is private institutions
+employment <- subset(employment, year == 2019 & qtr == 1 & own_code == 5 | year == 2021 & qtr == 4 & own_code == 5)
+employment22 <- subset(employment22, year == 2019 & qtr == 1 & own_code == 5 | year == 2022 & qtr == 1 & own_code == 5)
+
+
+
+#getting the average employment level for the quarter
+employment$av_qtr_employment  <- round(rowMeans(subset(employment, select = c("month1_emplvl", "month2_emplvl", "month3_emplvl")), na.rm = TRUE), 1)
+employment22$av_qtr_employment  <- round(rowMeans(subset(employment22, select = c("month1_emplvl", "month2_emplvl", "month3_emplvl")), na.rm = TRUE), 1)
+
+
+colnames(employment)[c(1,3)] <- c('FIPS', 'YEAR')
+colnames(employment22)[c(1,3)] <- c('FIPS', 'YEAR')
+
+
+
+
+
+
+#demographics
+
+
+VA_demographics.2010_2019 <- read.csv("Data/Demographics/cc-est2019-alldata-51.csv", header= TRUE)
+VA_demographics.2020_2021 <- read.csv("Data/Demographics/cc-est2021-alldata-51.csv", header= TRUE)
+NC_demographics.2010_2019 <- read.csv("Data/Demographics/cc-est2019-alldata-37.csv", header= TRUE)
+NC_demographics.2020_2021 <- read.csv("Data/Demographics/cc-est2021-alldata-37.csv", header= TRUE)
+
+all_demographics.2010_2019 <- rbind(VA_demographics.2010_2019,NC_demographics.2010_2019)
+all_demographics.2020_2021 <- rbind(VA_demographics.2020_2021,NC_demographics.2020_2021)
+
+#variable vector
+
+all_demographics.vector <- c(
+  "STATE", "COUNTY","STNAME", "CTYNAME", "YEAR", 
+  "AGEGRP", "TOT_POP", "TOT_FEMALE", "WAC_MALE", "WAC_FEMALE", "BAC_MALE", "BAC_FEMALE", "H_MALE", "H_FEMALE")
+
+#we only need data from 2021 & 2019
+
+all_demographics.2019 <- subset(all_demographics.2010_2019, YEAR == 12, select = all_demographics.vector)
+all_demographics.2021 <- subset(all_demographics.2020_2021, YEAR ==  3, select = all_demographics.vector)
+
+all_demographics.2019$YEAR <- 2019
+all_demographics.2021$YEAR <- 2021
+
+demographics_both <- rbind(all_demographics.2019, all_demographics.2021)
+
+nCOUNTY <- sprintf("%03d",demographics_both$COUNTY)
+demographics_both <- cbind(demographics_both,nCOUNTY)
+
+demographics_both$FIPS <- paste(demographics_both$STATE, demographics_both$nCOUNTY, sep = '')
+
+demographics <- subset(demographics_both, AGEGRP == 0)
+
+
+#3 race dummies
+demographics$WHITE <- demographics$WAC_MALE + demographics$WAC_FEMALE
+demographics$BLACK <- demographics$BAC_MALE + demographics$BAC_FEMALE
+demographics$HISP <- demographics$H_MALE + demographics$H_FEMALE
+
+
+
+keeps1 <- c(
+  "FIPS","STNAME", "CTYNAME", "YEAR", 
+  "TOT_POP", "TOT_FEMALE", "WHITE", "BLACK", "HISP")
+
+demographics <- demographics[ , keeps1, drop = T]
+
+demographics_ages <- subset(demographics_both, AGEGRP != 0)
+
+demographics_ages <- demographics_ages %>% 
+                        group_by(FIPS, YEAR) %>%
+                         mutate(TOTAL = sum(TOT_POP))
+
+#check to see that total = total pop
+
+check_age_totals <- subset(demographics_ages, AGEGRP == 1)
+
+all(demographics$TOT_POP == check_age_totals$TOTAL) #TRUE
+
+demographics_ages$proportion <- demographics_ages$TOT_POP/demographics_ages$TOTAL
+demographics_ages$AAGE <- demographics_ages$AGEGRP*demographics_ages$proportion
+
+age_weights <- aggregate(AAGE ~ FIPS + YEAR, demographics_ages, sum)
+
+age_weights$AAGE <- round(age_weights$AAGE, 2)
+
+demographics <- merge(demographics, age_weights, by = c('FIPS', 'YEAR'))
+
+#now we have all the totals and average age 
+#next is to get the percentages
+
+demographics$GENDER <- round(demographics$TOT_FEMALE / demographics$TOT_POP, 3)
+demographics$PWHITE <- round(demographics$WHITE / demographics$TOT_POP, 3)
+demographics$PBLACK <- round(demographics$BLACK / demographics$TOT_POP, 3)
+demographics$PHISP <- round(demographics$HISP / demographics$TOT_POP,3)
+
+
+# checking the correlations for informed set-up of the regression: 
+
+cor(demographics[, c('AAGE','GENDER','PWHITE','PBLACK','PHISP')])
+
+#PWHITE and PBLACK are too highly correlated to include them both in a regression. 
+#multicollinearity would throw off the interpretation
+
+
+keeps2 <- c(
+  "FIPS","YEAR", "STNAME", "CTYNAME", 
+  "TOT_POP", "AAGE", "GENDER", "PWHITE", "PBLACK", "PHISP")
+
+demographics <- demographics[ , keeps2, drop = T]
+
+
+
+#now importing size by square miles to get pop density...
+all_LandData <- read.csv("Data/Land/LND01.csv", header= TRUE)
+
+
+glimpse(all_LandData)
+
+LandData <- subset(all_LandData, STCOU > 37000 & STCOU < 38000 | STCOU > 51000 & STCOU < 52000)
+
+keeps <- c("Areaname","STCOU", "LND010190D")
+LandData <- LandData[ , keeps, drop = T]
+
+colnames(LandData) <- c("county", "FIPS", "Sq_mi")
+
+#leave that there for a second
+
+#moving on to educational attainment
+#has two lines
+
+header <- scan("Data/Education/ACSST5Y2020.S1501_data_with_overlays_2022-05-02T141241.csv", nlines = 1, what = character(), sep = ",")
+edu.NC <- read.csv("Data/Education/ACSST5Y2020.S1501_data_with_overlays_2022-05-02T141241.csv", skip = 2, header = FALSE)
+names(edu.NC) <- header
+
+header <- scan("Data/Education/ACSST5Y2020.S1501_data_with_overlays_2022-06-10T122115.csv", nlines = 1, what = character(), sep = ",")
+edu.VA <- read.csv("Data/Education/ACSST5Y2020.S1501_data_with_overlays_2022-06-10T122115.csv", skip = 2, header = FALSE)
+names(edu.VA) <- header
+
+education <- rbind(edu.NC, edu.VA)
+
+education <- separate(education, 1, into = c(NA, "FIPS"), sep = "US", remove = T)
+
+#totalling # of graduates
+education$uni_gradt <- education$S1501_C01_005E + education$S1501_C01_018E + education$S1501_C01_021E + education$S1501_C01_024E + education$S1501_C01_027E
+
+keeps <- c("FIPS","uni_gradt")
+education <- education[ , keeps, drop = T]
+
+ 
+
+#the population total educational attainment is divided by should be an average of 2019 and 2021 data
+#or 2020 total pop data
+
+education.05 <- merge(education, subset(demographics, YEAR == 2019)[,c("FIPS", "TOT_POP")], by = "FIPS")
+
+education.1 <- merge(education.05, subset(demographics, YEAR == 2021)[,c("FIPS", "TOT_POP")], by = "FIPS")
+
+education$pop_av <- (education.1$TOT_POP.x + education.1$TOT_POP.y)/2
+
+
+#combine data
+Data <- merge(employment, demographics, by = c("FIPS", "YEAR"), all = T )
+
+demographics22 <- demographics
+
+demographics22$YEAR[demographics22$YEAR == 2021] <- 2022
+
+#note I am assigning 2021 demographic data for 2022 just as a filler 
+#because I dont have real 2022 data yet
+
+Data22 <- merge(employment22, demographics22, by = c("FIPS", "YEAR"), all = T )
+
+
+
+
+
+#putting in the non-year-dependent constants 
+Data <- merge(Data, LandData, by=c("FIPS"), all = T)
+Data <- merge(Data, education, by=c("FIPS"), all = T)
+
+Data$pop_density <- round(Data$TOT_POP / Data$Sq_mi,1)
+Data$uni_gradrt <- round(Data$uni_gradt / Data$pop_av,3)
+
+Data22 <- merge(Data22, LandData, by=c("FIPS"), all = T)
+Data22 <- merge(Data22, education, by=c("FIPS"), all = T)
+
+Data22$pop_density <- round(Data22$TOT_POP / Data22$Sq_mi, 1)
+Data22$uni_gradrt <- round(Data22$uni_gradt / Data22$pop_av, 3)
+
+
+#DID variables to be added after cleaning
+
+#cleaning
+
+colSums(Data == 0, na.rm = T)   #months are all the same
+
+#keeping only the columns i need
+keeps <- c("FIPS","YEAR", "qtr", "av_qtr_employment", 
+           "STNAME", "CTYNAME", "TOT_POP", "AAGE", 
+           "GENDER", "PWHITE", "PBLACK", "PHISP", 
+           "pop_density", "uni_gradrt")
+Data <- Data[ , keeps, drop = T]
+
+Data$av_qtr_employment[Data$av_qtr_employment == 0] <- NA
+
+
+FIPS <- read.csv("Data/FIPS/2019_Virginia_Census_Counties___County_Equivalents.csv", header= T)
+
+keeps <- c("GEOID")
+FIPS <- FIPS[ , keeps, drop = T]
+
+"The Commonwealth of Virginia is divided into 95 counties, 
+along with 38 independent cities that are considered 
+county-equivalents for census purposes."
+
+"The U.S. state of North Carolina is divided into 100 counties."
+
+95 + 38 + 100 #233
+
+n_distinct(Data$FIPS) #238
+#5 counties too many
+
+FIPS <- c(seq.int(37001, 37199, by = 2), FIPS)
+n_distinct(FIPS) #233
+#now I have a checklist for all counties in both states: FIPS
+
+#turn decimals into percentages for easier interpretation 
+Data$PWHITE <- Data$PWHITE*100
+Data22$PWHITE <- Data22$PWHITE*100
+
+Data$PBLACK <- Data$PBLACK*100
+Data22$PBLACK <- Data22$PBLACK*100
+
+Data$PHISP <- Data$PHISP*100
+Data22$PHISP <- Data22$PHISP*100
+
+Data$uni_gradrt <- Data$uni_gradrt*100
+Data22$uni_gradrt <- Data22$uni_gradrt*100
+
+
+
+#checking our county checklist against the counties we have 
+setdiff(Data$FIPS, FIPS) #"37999" "51515" "51560" "51780" "51999"
+
+#37999, 51999
+#these arnt real fips codes in the states and its not clear what theyre referring to
+#dropping them
+
+#51515
+#one observation, NAs across the board
+#"Virginia, 2013: The independent city of Bedford (FIPS 51515) merges into
+#Bedford County (FIPS 51019)." - FIPS County Code Changes 2021.doc
+
+#51560
+#one observation, NAs across the board
+#"Virginia, 2001: The independent city of Clifton Forge (FIPS 51560) merges
+#into Alleghany county (FIPS 51005)." - FIPS County Code Changes 2021.doc
+
+#51780
+#one observation, NAs across the board
+#"Virginia, 1995: The independent city of South Boston (FIPS 51780)
+#merges into Halifax county (FIPS 51083)." - FIPS County Code Changes 2021.doc
+
+Data.clean <-Data[!(Data$FIPS=="37999" | Data$FIPS=="51999" | Data$FIPS=="51515" | Data$FIPS=="51560" | Data$FIPS=="51780" ),]
+
+dim(Data.clean) #466
+n_distinct(Data.clean$FIPS) #233 
+#good
+
+colSums(Data.clean == 0, na.rm = T) #0
+colSums(is.na(Data.clean)) #no NAs except for the dependent variable  
+
+Data.missing <- subset(Data, is.na(av_qtr_employment))
+
+#missing 97 employment observations
+
+sum(Data.missing$FIPS > 51000) #63 from VA
+sum(Data.missing$FIPS < 38000) #34 of them are from NC
+
+#203 complete observations from VA
+#166 complete observations from NC
+
+
+
+n_distinct(Data.missing$FIPS) #60 missing counties out of 233
+n_distinct(Data.missing$FIPS[Data.missing$FIPS > 51000]) #39 from VA
+n_distinct(Data.missing$FIPS[Data.missing$FIPS < 38000]) #21 from NC
+
+n_distinct(Data.missing$FIPS[Data.missing$YEAR == 2019]) #44 from 2019
+n_distinct(Data.missing$FIPS[Data.missing$YEAR == 2021]) #53 from 2021
+
+dim(Data22)
+dim(Data)
+
+
+
+##same process with Data22
+
+
+
+colSums(Data22 == 0, na.rm = T)   #months are all the same
+
+#keeping only the columns i need
+keeps <- c("FIPS","YEAR", "qtr", "av_qtr_employment", 
+           "STNAME", "CTYNAME", "TOT_POP", "AAGE", 
+           "GENDER", "PWHITE", "PBLACK", "PHISP", 
+           "pop_density", "uni_gradrt")
+Data22 <- Data22[ , keeps, drop = T]
+
+Data22$av_qtr_employment[Data22$av_qtr_employment == 0] <- NA
+
+
+
+
+setdiff(Data22$FIPS, FIPS) #"37999" "51515" "51560" "51780" "51999"
+
+#37999, 51999
+#these arnt real fips codes and its not clear what theyre referring to
+#dropping them
+
+#51515
+#one observation, NAs across the board
+#"Virginia, 2013: The independent city of Bedford (FIPS 51515) merges into
+#Bedford County (FIPS 51019)." - FIPS County Code Changes 2021.doc
+
+#51560
+#one observation, NAs across the board
+#"Virginia, 2001: The independent city of Clifton Forge (FIPS 51560) merges
+#into Alleghany county (FIPS 51005)." - FIPS County Code Changes 2021.doc
+
+#51780
+#one observation, NAs across the board
+#"Virginia, 1995: The independent city of South Boston (FIPS 51780)
+#merges into Halifax county (FIPS 51083)." - FIPS County Code Changes 2021.doc
+
+Data22.clean <-Data22[!(Data22$FIPS=="37999" | Data22$FIPS=="51999" | Data22$FIPS=="51515" | Data22$FIPS=="51560" | Data22$FIPS=="51780" ),]
+
+colSums(Data22.clean == 0, na.rm = T) #0
+colSums(is.na(Data22.clean)) #0 
+
+Data22.missing <- subset(Data22.clean, is.na(av_qtr_employment))
+#missing 86  employment observations
+sum(Data22.missing$FIPS > 51000) #54 from VA
+sum(Data22.missing$FIPS < 38000) #32 of them are from NC
+
+
+
+n_distinct(Data22.missing$FIPS) #54 missing counties out of 233
+n_distinct(Data22.missing$FIPS[Data22.missing$FIPS > 51000]) #35 from VA
+n_distinct(Data22.missing$FIPS[Data22.missing$FIPS < 38000]) #19 from NC
+
+
+n_distinct(Data22.missing$FIPS[Data22.missing$YEAR == 2019]) #44 from 2019
+n_distinct(Data22.missing$FIPS[Data22.missing$YEAR == 2022]) #42 from 2022
+#2022 is missing less than 2021 so that's nice
+
+
+
+#adding DID variables
+
+#control: 
+#0 for control: NC
+#1 for target: VA
+Data.clean$Control[Data.clean$FIPS > 51000] <- 1
+Data.clean$Control[Data.clean$FIPS < 38000] <- 0
+
+Data22.clean$Control[Data22.clean$FIPS > 51000] <- 1
+Data22.clean$Control[Data22.clean$FIPS < 38000] <- 0
+
+#time
+#0 for before
+#1 for after
+Data.clean$Time[Data.clean$YEAR == 2019] <- 0
+Data.clean$Time[Data.clean$YEAR != 2019] <- 1
+
+Data22.clean$Time[Data22.clean$YEAR == 2019] <- 0
+Data22.clean$Time[Data22.clean$YEAR != 2019] <- 1
+
+#treatment term
+Data.clean$Treatment = Data.clean$Control * Data.clean$Time
+
+Data22.clean$Treatment = Data22.clean$Control * Data22.clean$Time
+
+
+cor(Data.clean[, c('AAGE','GENDER','PWHITE', 'PBLACK', 'PHISP', 'pop_density', 'uni_gradrt', 'Control', 'Time', 'Treatment')])
+
+
+Data.observed <- drop_na(Data.clean)
+
+
+#descriptive statistics table creation
+
+
+
+
+#missing data
+tab_02 = data.frame(
+  Measure = c("Average age (grouped)", "Gender (1 = 100% women)", "Percent White", "Percent Black", "Percent Hisp/Latino", "Population Density", "College Graduation Rate"),
+  
+  Count =  c(n_distinct((subset(Data.missing, !is.na(AAGE)))$FIPS), n_distinct((subset(Data.missing, !is.na(GENDER)))$FIPS), n_distinct((subset(Data.missing, !is.na(PWHITE)))$FIPS), n_distinct((subset(Data.missing, !is.na(PBLACK)))$FIPS), n_distinct((subset(Data.missing, !is.na(PHISP)))$FIPS), n_distinct((subset(Data.missing, !is.na(pop_density)))$FIPS), n_distinct((subset(Data.missing, !is.na(uni_gradrt)))$FIPS)), 
+  
+  Count.year.0 = c(n_distinct((subset(Data.missing, YEAR == 2019 & !is.na(AAGE)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2019 & !is.na(GENDER)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2019 & !is.na(PWHITE)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2019 & !is.na(PBLACK)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2019 & !is.na(PHISP)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2019 & !is.na(pop_density)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2019 & !is.na(uni_gradrt)))$FIPS)), 
+  
+  
+  
+  Count.year.1 = c(n_distinct((subset(Data.missing, YEAR == 2021 & !is.na(AAGE)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2021 & !is.na(GENDER)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2021 & !is.na(PWHITE)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2021 & !is.na(PBLACK)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2021 & !is.na(PHISP)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2021 & !is.na(pop_density)))$FIPS), n_distinct((subset(Data.missing, YEAR == 2021 & !is.na(uni_gradrt)))$FIPS)), 
+  
+  
+  N =  c(sum(!is.na(Data.missing$AAGE)), sum(!is.na(Data.missing$GENDER)), sum(!is.na(Data.missing$PWHITE)), sum(!is.na(Data.missing$PBLACK)), sum(!is.na(Data.missing$PHISP)), sum(!is.na(Data.missing$pop_density)), sum(!is.na(Data.missing$uni_gradrt))), 
+  
+  Mean  = c(mean(Data.missing$AAGE, na.rm = T), mean(Data.missing$GENDER, na.rm = T), mean(Data.missing$PWHITE, na.rm = T), mean(Data.missing$PBLACK, na.rm = T), mean(Data.missing$PHISP, na.rm = T), mean(Data.missing$pop_density, na.rm = T), mean(Data.missing$uni_gradrt, na.rm = T)),
+  
+  Standard_Deviation = c(sd(Data.missing$AAGE, na.rm = T), sd(Data.missing$GENDER, na.rm = T), sd(Data.missing$PWHITE, na.rm = T), sd(Data.missing$PBLACK, na.rm = T), sd(Data.missing$PHISP, na.rm = T), sd(Data.missing$pop_density, na.rm = T), sd(Data.missing$uni_gradrt, na.rm = T)),
+  
+  Min = c(min(Data.missing$AAGE, na.rm = T), min(Data.missing$GENDER, na.rm = T), min(Data.missing$PWHITE, na.rm = T), min(Data.missing$PBLACK, na.rm = T), min(Data.missing$PHISP, na.rm = T), min(Data.missing$pop_density, na.rm = T), min(Data.missing$uni_gradrt, na.rm = T)),
+  
+  Max = c(max(Data.missing$AAGE, na.rm = T), max(Data.missing$GENDER, na.rm = T), max(Data.missing$PWHITE, na.rm = T), max(Data.missing$PBLACK, na.rm = T), max(Data.missing$PHISP, na.rm = T), max(Data.missing$pop_density, na.rm = T), max(Data.missing$uni_gradrt, na.rm = T)))
+
+
+#observed data 
+tab_03 = data.frame(
+  Measure = c("Average age (grouped)", "Gender (1 = 100% women)", "Percent White", "Percent Black", "Percent Hisp/Latino", "Population Density", "College Graduation Rate"),
+  
+  Count =  c(n_distinct((subset(Data.observed, !is.na(AAGE)))$FIPS), n_distinct((subset(Data.observed, !is.na(GENDER)))$FIPS), n_distinct((subset(Data.observed, !is.na(PWHITE)))$FIPS), n_distinct((subset(Data.observed, !is.na(PBLACK)))$FIPS), n_distinct((subset(Data.observed, !is.na(PHISP)))$FIPS), n_distinct((subset(Data.observed, !is.na(pop_density)))$FIPS), n_distinct((subset(Data.observed, !is.na(uni_gradrt)))$FIPS)), 
+  
+  Count.year.0 = c(n_distinct((subset(Data.observed, YEAR == 2019 & !is.na(AAGE)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2019 & !is.na(GENDER)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2019 & !is.na(PWHITE)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2019 & !is.na(PBLACK)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2019 & !is.na(PHISP)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2019 & !is.na(pop_density)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2019 & !is.na(uni_gradrt)))$FIPS)), 
+  
+  
+  
+  Count.year.1 = c(n_distinct((subset(Data.observed, YEAR == 2021 & !is.na(AAGE)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2021 & !is.na(GENDER)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2021 & !is.na(PWHITE)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2021 & !is.na(PBLACK)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2021 & !is.na(PHISP)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2021 & !is.na(pop_density)))$FIPS), n_distinct((subset(Data.observed, YEAR == 2021 & !is.na(uni_gradrt)))$FIPS)), 
+  
+  
+  N =  c(sum(!is.na(Data.observed$AAGE)), sum(!is.na(Data.observed$GENDER)), sum(!is.na(Data.observed$PWHITE)), sum(!is.na(Data.observed$PBLACK)), sum(!is.na(Data.observed$PHISP)), sum(!is.na(Data.observed$pop_density)), sum(!is.na(Data.observed$uni_gradrt))), 
+  
+  Mean  = c(mean(Data.observed$AAGE, na.rm = T), mean(Data.observed$GENDER, na.rm = T), mean(Data.observed$PWHITE, na.rm = T), mean(Data.observed$PBLACK, na.rm = T), mean(Data.observed$PHISP, na.rm = T), mean(Data.observed$pop_density, na.rm = T), mean(Data.observed$uni_gradrt, na.rm = T)),
+  
+  Standard_Deviation = c(sd(Data.observed$AAGE, na.rm = T), sd(Data.observed$GENDER, na.rm = T), sd(Data.observed$PWHITE, na.rm = T), sd(Data.observed$PBLACK, na.rm = T), sd(Data.observed$PHISP, na.rm = T), sd(Data.observed$pop_density, na.rm = T), sd(Data.observed$uni_gradrt, na.rm = T)),
+  
+  Min = c(min(Data.observed$AAGE, na.rm = T), min(Data.observed$GENDER, na.rm = T), min(Data.observed$PWHITE, na.rm = T), min(Data.observed$PBLACK, na.rm = T), min(Data.observed$PHISP, na.rm = T), min(Data.observed$pop_density, na.rm = T), min(Data.observed$uni_gradrt, na.rm = T)),
+  
+  Max = c(max(Data.observed$AAGE, na.rm = T), max(Data.observed$GENDER, na.rm = T), max(Data.observed$PWHITE, na.rm = T), max(Data.observed$PBLACK, na.rm = T), max(Data.observed$PHISP, na.rm = T), max(Data.observed$pop_density, na.rm = T), max(Data.observed$uni_gradrt, na.rm = T)))
+
+#Employment data
+va_2019_q1 <- subset(Data.clean, !is.na(av_qtr_employment) & YEAR == 2019 & STNAME == "Virginia")
+va_2021_q4 <- subset(Data.clean, !is.na(av_qtr_employment) & YEAR == 2021 & STNAME == "Virginia")
+va_2022_q1 <- subset(Data22.clean, !is.na(av_qtr_employment) & YEAR == 2022 & STNAME == "Virginia")
+nc_2019_q1 <- subset(Data.clean, !is.na(av_qtr_employment) & YEAR == 2019 & STNAME == "North Carolina")
+nc_2021_q4 <- subset(Data.clean, !is.na(av_qtr_employment) & YEAR == 2021 & STNAME == "North Carolina")
+nc_2022_q1 <- subset(Data22.clean, !is.na(av_qtr_employment) & YEAR == 2022 & STNAME == "North Carolina")
+
+tab_emp <- data.frame(
+  Measure = c("VA 2019 Q1", "VA 2021 Q4", "VA 2022 Q1", "NC 2019 Q1", "NC 2021 Q4", "NC 2022 Q1"),
+  Count = c(n_distinct(va_2019_q1$FIPS), n_distinct(va_2021_q4$FIPS), n_distinct(va_2022_q1$FIPS), 
+            n_distinct(nc_2019_q1$FIPS), n_distinct(nc_2021_q4$FIPS), n_distinct(nc_2022_q1$FIPS)),
+  Mean = c(mean(va_2019_q1$av_qtr_employment, na.rm = T), mean(va_2021_q4$av_qtr_employment, na.rm = T), 
+           mean(va_2022_q1$av_qtr_employment, na.rm = T), mean(nc_2019_q1$av_qtr_employment, na.rm = T), 
+           mean(nc_2021_q4$av_qtr_employment, na.rm = T), mean(nc_2022_q1$av_qtr_employment)),
+  Std.Dev = c(sd(va_2019_q1$av_qtr_employment, na.rm = T), sd(va_2021_q4$av_qtr_employment, na.rm = T), 
+              sd(va_2022_q1$av_qtr_employment, na.rm = T), sd(nc_2019_q1$av_qtr_employment, na.rm = T), 
+              sd(nc_2021_q4$av_qtr_employment, na.rm = T), sd(nc_2022_q1$av_qtr_employment)),
+  Min = c(min(va_2019_q1$av_qtr_employment, na.rm = T), min(va_2021_q4$av_qtr_employment, na.rm = T), 
+          min(va_2022_q1$av_qtr_employment, na.rm = T), min(nc_2019_q1$av_qtr_employment, na.rm = T), 
+          min(nc_2021_q4$av_qtr_employment, na.rm = T), min(nc_2022_q1$av_qtr_employment)),
+  Max = c(max(va_2019_q1$av_qtr_employment, na.rm = T), max(va_2021_q4$av_qtr_employment, na.rm = T), 
+          max(va_2022_q1$av_qtr_employment, na.rm = T), max(nc_2019_q1$av_qtr_employment, na.rm = T), 
+          max(nc_2021_q4$av_qtr_employment, na.rm = T), max(nc_2022_q1$av_qtr_employment))
+)
+
+#2019 demographic data 
+data_2019 <- subset(Data.clean, YEAR == 2019)
+
+tab_2019 <- data.frame(
+  Measure = c("Average age (grouped)", "Gender (1 = 100% women)", "Percent White", "Percent Black", "Percent Hisp/Latino", "Population Density"),
+  
+  Mean  = c(mean(data_2019$AAGE, na.rm = T), mean(data_2019$GENDER, na.rm = T), mean(data_2019$PWHITE, na.rm = T), mean(data_2019$PBLACK, na.rm = T), mean(data_2019$PHISP, na.rm = T), mean(data_2019$pop_density, na.rm = T)),
+  
+  Standard_Deviation = c(sd(data_2019$AAGE, na.rm = T), sd(data_2019$GENDER, na.rm = T), sd(data_2019$PWHITE, na.rm = T), sd(data_2019$PBLACK, na.rm = T), sd(data_2019$PHISP, na.rm = T), sd(data_2019$pop_density, na.rm = T)),
+  
+  Min = c(min(data_2019$AAGE, na.rm = T), min(data_2019$GENDER, na.rm = T), min(data_2019$PWHITE, na.rm = T), min(data_2019$PBLACK, na.rm = T), min(data_2019$PHISP, na.rm = T), min(data_2019$pop_density, na.rm = T)),
+  
+  Max = c(max(data_2019$AAGE, na.rm = T), max(data_2019$GENDER, na.rm = T), max(data_2019$PWHITE, na.rm = T), max(data_2019$PBLACK, na.rm = T), max(data_2019$PHISP, na.rm = T), max(data_2019$pop_density, na.rm = T)))
+
+#2021 demo data
+
+data_2021 <- subset(Data.clean, YEAR == 2021)
+
+tab_2021 <- data.frame(
+Measure = c("Average age (grouped)", "Gender (1 = 100% women)", "Percent White", "Percent Black", "Percent Hisp/Latino", "Population Density"),
+
+Mean = c(mean(data_2021$AAGE, na.rm = T), mean(data_2021$GENDER, na.rm = T), mean(data_2021$PWHITE, na.rm = T), mean(data_2021$PBLACK, na.rm = T), mean(data_2021$PHISP, na.rm = T), mean(data_2021$pop_density, na.rm = T)),
+
+Standard_Deviation = c(sd(data_2021$AAGE, na.rm = T), sd(data_2021$GENDER, na.rm = T), sd(data_2021$PWHITE, na.rm = T), sd(data_2021$PBLACK, na.rm = T), sd(data_2021$PHISP, na.rm = T), sd(data_2021$pop_density, na.rm = T)),
+
+Min = c(min(data_2021$AAGE, na.rm = T), min(data_2021$GENDER, na.rm = T), min(data_2021$PWHITE, na.rm = T), min(data_2021$PBLACK, na.rm = T), min(data_2021$PHISP, na.rm = T), min(data_2021$pop_density, na.rm = T)),
+
+Max = c(max(data_2021$AAGE, na.rm = T), max(data_2021$GENDER, na.rm = T), max(data_2021$PWHITE, na.rm = T), max(data_2021$PBLACK, na.rm = T), max(data_2021$PHISP, na.rm = T), max(data_2021$pop_density, na.rm = T)))
+
+
+# Education
+tab_Edu <- data.frame(
+  Measure = c("Graduation Rate"),
+  
+  Mean  = c(mean(Data.clean$uni_gradrt, na.rm = T)),
+  
+  Standard_Deviation = c(sd(Data.clean$uni_gradrt, na.rm = T)),
+  
+  Min = c(min(Data.clean$uni_gradrt, na.rm = T)),
+  
+  Max = c(max(Data.clean$uni_gradrt, na.rm = T)))
+
+#plain regressions
+
+PlainDID <- lm(av_qtr_employment ~ Time + Control + Treatment, data = Data.observed)
+Education <- lm(av_qtr_employment ~ Time + Control + Treatment + uni_gradrt, data = Data.observed)
+
+summary(PlainDID)
+summary(Education)
+
+#original regressions
+#variable selection (vs) will help select the variables that directly effect employment and 
+#are not just measuring the differences between the states
+
+#vs will also help to identify if PBLACK or PWHITE is a better predictor of the employment level
+
+lm.original.w <-    lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + GENDER + PWHITE + PHISP + pop_density + uni_gradrt, data = Data.clean)
+
+lm.original.w.22 <- lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + GENDER + PWHITE + PHISP + pop_density + uni_gradrt, data = Data22.clean)
+
+
+lm.original.b <-  lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + GENDER + PBLACK + PHISP + pop_density + uni_gradrt, data = Data.clean)
+
+lm.original.b.22 <- lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + GENDER + PBLACK + PHISP + pop_density + uni_gradrt, data = Data22.clean)
+
+summary(lm.original.w)
+summary(lm.original.w.22)
+
+summary(lm.original.b)
+summary(lm.original.b.22)
+#treatment is still not significant in 2022
+
+
+
+
+
+#logistic regression 
+#attempting to quantify how different the states from each other 
+#to see if NC is a valid control for VA
+
+
+
+#binary classification already exists with the control column
+
+
+
+Logistic.b <- glm(Control ~ AAGE + GENDER + PBLACK + PHISP + pop_density + uni_gradrt, data = Data.clean, family = binomial)
+
+Logistic.b.22 <- glm(Control ~ AAGE + GENDER + PBLACK + PHISP + pop_density + uni_gradrt, data = Data22.clean, family = binomial)
+
+Logistic.w <- glm(Control ~ AAGE + GENDER + PWHITE + PHISP + pop_density + uni_gradrt, data = Data.clean, family = binomial)
+
+Logistic.w.22 <- glm(Control ~ AAGE + GENDER + PWHITE + PHISP + pop_density + uni_gradrt, data = Data22.clean, family = binomial)
+
+Log.probs <- predict(Logistic.w, type = "response")
+Log.probs.22 <- predict(Logistic.w.22, type = "response")
+
+Log.probs[1:10]
+
+Logistic.prediction <- rep("NC", dim(Data.clean)[1])
+Logistic.prediction.22 <- rep("NC.pred", dim(Data22.clean)[1])
+
+Logistic.prediction[Log.probs > 0.5] = "VA"
+Logistic.prediction.22[Log.probs.22 > 0.5] = "VA.pred"
+
+summary(Logistic.w)
+summary(Logistic.w.22)
+
+
+
+#confusion matrix
+CM <- table(Logistic.prediction, Data.clean$STNAME)
+CM
+CM.22 <- table(Logistic.prediction.22, Data22.clean$STNAME)
+CM.22
+
+(CM[2,1] + CM[1,2]) / dim(Data.clean)[1]
+(CM.22[2,1] + CM.22[1,2]) / dim(Data.clean)[1]
+
+#0.2274678 when PBLACK is included
+#0.2296137 when PWHITE is included
+
+#PBLACK is not significant when included
+#PWHITE is significant at the 10% level
+#implying neither are very good
+
+
+
+#23% error rate
+#not great but also not terrible
+#so theyre fairly dissimilar 
+
+
+
+#Lasso
+
+
+
+x <- Data.observed[, c("Time" , "Control" , "Treatment" , "AAGE" , "GENDER" , "PWHITE", "PHISP", "pop_density" , "uni_gradrt" )]
+y <- Data.observed$av_qtr_employment
+
+lasso.fit <- glmnet(x, y, alpha = 1) # alpha = 1 for Lasso
+
+
+coef(lasso.fit)
+coef(lasso.fit, s = 51 )
+ 
+
+lassos<- as.matrix(coef(lasso.fit))
+
+log.lambda <- log(lasso.fit$lambda)
+
+lassos <- rbind(lassos,lasso.fit$lambda )
+lassos <- rbind(lassos,log.lambda )
+#now we have a cute little matrix to pick out our lambda
+
+
+
+row.names(lassos)[c(11,12)] <- c("lambda", "log.lambda")
+
+
+
+
+
+
+
+
+
+
+#i can see a few clusters that drop out together
+
+lassos.t <- t(lassos)
+
+lassos.t <- as.data.frame(lassos.t)
+
+
+
+
+lambdas <- min((lassos.t[lassos.t$Time == 0, ])$log.lambda)
+
+#making a vector of the lambdas & names
+
+options <- data.frame(row.names = c(names(lassos.t[, !names(lassos.t) %in% c( "(Intercept)", "lambda", "log.lambda")]), "PBLACK"))
+
+
+for (x in names(lassos.t[, !names(lassos.t) %in% c("Time", "(Intercept)", "lambda", "log.lambda")])){
+
+ 
+
+  lambdas <- append(lambdas, min((lassos.t[lassos.t[x] == 0, ])$log.lambda))
+
+}
+
+
+
+
+#another one without gender for a more readable graph
+
+x.2 <- Data.observed[, c("Time" , "Control" , "Treatment" , "AAGE" , "PWHITE", "PHISP", "pop_density" , "uni_gradrt" )]
+y.2 <- Data.observed$av_qtr_employment
+
+x.3 <- Data.observed[, c("Time" , "Control" , "Treatment" , "AAGE" , "PBLACK", "PHISP", "pop_density" , "uni_gradrt" )]
+y.3 <- Data.observed$av_qtr_employment
+
+lasso.fit.2 <- glmnet(x.2, y.2 , alpha = 1)
+lasso.fit.3 <- glmnet(x.3, y.3 , alpha = 1)
+
+
+lasso.fit.2 <- glmnet(x.2, y.2 , alpha = 1)
+
+
+coef(lasso.fit.2)
+coef(lasso.fit.2, s = 51 )
+
+
+lassos.2 <- as.matrix(coef(lasso.fit.2))
+
+log.lambda.2 <- log(lasso.fit.2$lambda)
+
+lassos.2 <- rbind(lassos,lasso.fit.2$lambda )
+lassos.2 <- rbind(lassos,log.lambda.2 )
+
+
+
+row.names(lassos.2)[c(10,11)] <- c("lambda", "log.lambda")
+
+#lambdas
+
+lassos.3 <- as.matrix(coef(lasso.fit.3))
+
+log.lambda.3 <- log(lasso.fit.3$lambda)
+
+lassos.3 <- rbind(lassos.3,lasso.fit.3$lambda )
+lassos.3 <- rbind(lassos.3,log.lambda.3 )
+
+
+row.names(lassos.3)[c(10,11)] <- c("lambda", "log.lambda")
+
+lassos.t.3 <- t(lassos.3)
+lassos.t.3 <- as.data.frame(lassos.t.3)
+
+
+#appending PBLACK value to lambdas
+lambdas <- append(lambdas, min((lassos.t.3[lassos.t.3$PBLACK == 0, ])$log.lambda))
+
+options <- cbind(options, lambdas)
+
+
+
+idea <- c(1:10)
+options <- cbind(options, idea)
+
+
+
+options.sorted <-(options)[order(lambdas),]
+options.sorted<- options.sorted[-2]
+
+
+#PBLACK Lasso
+
+
+#in order:
+# options
+#Treatment drops first which is important 
+# Treatment 1.921979
+# GENDER 3.317486
+# Time 3.596587
+
+
+# pop_density 4.433890 #surprising pop density isnt more important 
+
+# PBLACK 4.806025
+# PHISP 5.271194
+# Control 5.643329
+# AAGE 6.294565
+# uni_gradrt 6.666700
+
+
+
+
+
+#since we cant include both PWHITE & PBLACK lets do it again, w PBLACK, w/o PWHITE
+
+# Treatment 1.921979
+# GENDER 3.317486
+# Time 3.596587
+
+# pop_density 4.526924
+
+# PWHITE 5.271194
+# PHISP 5.271194
+# Control 5.643329
+# AAGE 6.294565
+# uni_gradrt 6.666700
+
+#why is PWHITE & PHISP the same lambda?
+
+#no change in PHISP lambda, but PBLACK lambda < PWHITE lambda
+#implying it is a worse predictor of the employment level
+#so in the final regression we will use PWHITE since the 
+#lasso is implying it is a stronger predictor
+
+#a lambda of 5 makes sense due to the large gap and the variables deselected.
+#could make an argument to include pop density, however it is the only 
+#significant variable this method is suggesting we drop so lets do it 
+#since the whole goal of lasso regression is to narrow the focus 
+
+
+
+
+round(coef(lm.original.w), 3)
+
+
+
+lm.lassoed <-  lm(av_qtr_employment ~ Control + AAGE + PWHITE + PHISP  + uni_gradrt, data = Data.observed)
+
+summary(lm.original.w)
+summary(lm.original.b)
+summary(lm.lassoed)
+
+#a glaring disagreement between the traditional LM and the lassoed model:
+#the original trad model gave a low significance level to PHISP (p < 10)
+#but the lasso kept it in the top 5 
+#and then rerunning it after dropping the dropped variables 
+#shifted even more significance away from it
+
+
+lm.test <-  lm(av_qtr_employment ~ Time + GENDER + AAGE + PWHITE + PHISP  + uni_gradrt, data = Data.observed)
+
+summary(lm.test)
+
+#removing control and including pop_density shifts significance back on to phisp... 
+#so PHISP helps the model differentiate between NC & VA employment levels? 
+#and so with control in the model its much less important
+
+#ran lasso without PHISP:
+
+
+# lambdas
+# Treatment 1.735912
+# GENDER 3.410519
+# Time 3.689621
+# pop_density 4.433890
+# PWHITE 5.271194
+# Control 5.643329
+# AAGE 6.294565
+# uni_gradrt 6.666700
+
+#control is unchanged. 
+
+#this implies that the differences in both PHISP and population density 
+#are virtually solely explained by the differences between the two states
+#(i.e. Control)
+
+
+#rerunning the logistic regression solely on those two variables vs the rest?
+
+
+
+Logistic.Hisp.Pop <- glm(Control ~ PHISP + pop_density, data = Data.observed, family = binomial)
+Logistic.Else <- glm(Control ~ AAGE + GENDER + PWHITE + uni_gradrt, data = Data.observed, family = binomial)
+
+
+Hisp.Pop.probs <- predict(Logistic.Hisp.Pop, type = "response")
+Else.probs <- predict(Logistic.Else, type = "response")
+
+
+Hisp.Pop.prediction <- rep("NC", dim(Data.observed)[1])
+Else.prediction <- rep("NC", dim(Data.observed)[1])
+
+Hisp.Pop.prediction[Hisp.Pop.probs  > 0.5] = "VA"
+Else.prediction[Else.probs > 0.5] = "VA"
+
+summary(Logistic.Hisp.Pop)
+summary(Logistic.Else)
+
+
+#confusion matrix
+Hisp.Pop <- table(Hisp.Pop.prediction, Data.observed$STNAME)
+Hisp.Pop 
+
+Else <- table(Else.prediction, Data.observed$STNAME)
+Else
+
+
+(Else[2,1] + Else[1,2]) / dim(Data.observed)[1] #0.3841202
+(Hisp.Pop[2,1] + Hisp.Pop[1,2]) / dim(Data.observed)[1] #0.2660944
+
+#as i expected just relying on Hisp and POP_den 
+#tells the difference between the two states better than the other four combined
+#with the graduation rate being the next most useful (?)
+#this implies the better regression should drop HISP and pop_density as variables 
+#since they are captured by the control variable
+
+lm.filtered <-    lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + PWHITE + uni_gradrt, data = Data.observed)
+lm2.filtered <- lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + PBLACK + uni_gradrt, data = Data.observed)
+
+lm.filtered.22 <-  lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + PWHITE + uni_gradrt, data = Data22.clean)
+
+lm <-   lm(av_qtr_employment ~ Time + Control + Treatment + AAGE + GENDER + PWHITE + PHISP + pop_density + uni_gradrt, data = Data.observed)
+
+
+summary(lm.original.w)
+summary(lm.original.b)
+summary(lm)
+summary(lm.filtered)
+summary(lm2.filtered) 
+#as the lasso suggested the PBLACK falls beneath the .05 significance level
+#implying PWHITE is a better determiner
+summary(lm.filtered.22)
+
+
+
+#the difference between the states should be captured in Control
+#leaving time treatment & gender differences as having highly non-significant effects 
+#on the employment level
+
+
+
+#variables left that have a theoretically causal effect on the employment level 
+#among Food and beverage retailers:
+
+#Average age: 
+#for every 5 years the average age of the population is older, 
+#the employment level among Food and beverage retailers decreases by 470
+#working out to be 94 per average year older
+
+#Percent White:
+#for each percentage point higher a county is white the employment among 
+#Food and beverage retailers level decreases by 10
+
+#percent of the county population with a college degree:
+#for every percentage point higher of people with a college degree
+#Food and beverage retailer employment in the county increases by 89
+
+#State difference:
+#employment among Food and beverage retailers in Virginia 
+#lowers by 664 when compared to North Carolina
+
+#the goal was to examine the effect of Virginia's minimum wage increase 
+#in May of 2021:
+
+#The Treatment variable is not significant in both 2021 and 2022 
+#which tells us the increase did not have an effect on the employment level
+
+#the p value for treatment deceased from 0.83317 in 2021 data to 0.79520 in 2022 which is 
+#still highly non-significant.
+
+#a large caveat to the data is possible selection bias: 
+#the counties that are missing from each state may not be reporting their data 
+#to the Bureau of Labor Statistics because they dont have the resources necessary 
+#for data collection. Meaning the missing counties may be more rural & lower income 
+#and may therefore be more adversely effected by a raise in the minimum wage. 
+
+#another possible issue is a lag effect over time: the possibility the minimum wage
+#would not effect the employment level for a few years 
+#however naively looking at the significance level difference between 2021 and 2022
+#suggests to me that there be an effect that is extremely slow and may be overtaken by 
+#inflation anyway over time? further follow up studies would need to be done on this 
+
+#interestingly there was an additional minimum wage increase in Virginia to $11 on Jan 1 2022
+#this does not cause an issue because both increases can still be considered a
+#singular treatment since they both happened between the snapshot dates 
+#if anything the effect on employment would just have been made more dramatic
+
+#An additional issue was to address the differences between the control group NC and the
+#target: VA. Logistic and Lasso regression were used to select the best variables that 
+#described the differences between employment and not just the differences between the states.
+#that being said, finding a more similar control would improve the study
+
+#note: running a pure did gives no significant coeffs except the intercept
+# summary(lm(av_qtr_employment ~ Time + Control + Treatment, data = Data.observed))
+# summary(lm(av_qtr_employment ~ Time + Control + Treatment + uni_gradrt, data = Data.observed))
+
+```
+
+<!-- ## Abstract -->
+
+<!-- This paper examines what effect Virginia’s new minimum wage may have had on the employment level among food and beverage retailers in the state. On May 1st 2021, Virginia raised its minimum wage from the federal minimum of $7.25 to $9.50 and again to $11.00 on January 1st 2022. In the same timeframe Virginia’s neighbor, North Carolina, kept the federal minimum of $7.25. This paper shows that thus far, neither minimum wage hike has had a statistically significant effect on the employment level among food and beverage retailers. I use a Difference In Differences (DID) regression with North Carolina as a control, and used logistic and lasso regressions for variable selection guidance. -->
+
+## Abstract
+
+- On May 1st 2021, Virginia raised its minimum wage from the federal minimum of $7.25 to $9.50 and again to $11.00 on January 1st 2022
+
+- In the same timeframe Virginia’s neighbor, North Carolina, kept the federal minimum of $7.25
+
+- This created a "natural experiment" to compare Virginia with its neighbor to see if the hike had an effect on the state’s employment level
+
+## Abstract
+
+- I use a Difference In Differences (DID) regression with North Carolina as a control, and logistic and lasso regressions for variable selection guidance
+
+- The final model shows that neither minimum wage hike has had a statistically significant effect on the employment level among food and beverage workers in Virginia thus far
+
+
+
+<!-- ## Research Context -->
+
+<!-- The Congressional Budget Office released a report in 2019 that created predictions for three different minimum national wage hikes and their effect on the poverty level and employment. It predicted that an increase to $15 minimum wage would decrease the number of people below the poverty line by 1.3 million, with a two thirds chance employment would decrease anywhere between 0 and 3.7 million workers. It is vital that economics as a field is able to give an answer when someone asks to what degree minimum wage hikes effect employment. The purpose of this paper is to identify a specific example of a recent minimum wage change and give a more narrow response on it's effect on the employment level.  -->
+
+## Research Context
+
+- According to a report by The Congressional Budget Office in 2019 an increase to a $15 minimum wage would raise 1.3 million people out of poverty but with a two thirds chance employment would decrease by anywhere between 0 and 3.7 million workers
+
+- 3.7 million would be about a 65% increase in the unemployment rate
+
+- This potential employment loss statistic is so broad it conveys very little insight into whether or not raising the federal minimum wage is dangerous for the economy
+
+## Research Context
+
+- It is vital that economics as a field is able to give an answer when someone asks to what degree minimum wage hikes effect employment
+
+- The purpose of this project is to identify a specific example of a recent minimum wage change and give a more narrow response on its effect on the employment level
+
+
+
+
+<!-- In 2021 David Card and Alan Krueger were awarded a Nobel Prize for their paper “Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania” that was published in 1994. As the name suggests, they examined New Jersey’s minimum wage hike in 1992 from 4.25 to 5.05 and its effect on unemployment. The paper used a DID method to compare the employment level on either side of the NJ/PA border before and after the change. -->
+
+## Research Context
+
+### 2021 Economics Nobel Prize: 
+
+"Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania” by David Card and Alan Krueger in 1994
+
+- Examined New Jersey’s minimum wage hike in 1992 from $4.25 to $5.05 and its effect on the employment level among fast food workers in the area
+
+- The paper used a DID method to compare the employment level on either side of the NJ/PA border before and after the change
+
+## Research Context
+
+### What is DID Regression?
+- DID regression is a method that compares a control group and a subject group before and after a treatment is applied to the subject
+
+- Compares differences over time and differences between the groups
+
+- If there is a significant difference between the subject and control group after the treatment, it suggests the treatment had an impact
+
+- The null hypothesis is that the treatment had no effect
+
+- Utilizes cross-sectional data to mimic a traditional randomized control trials for "natural experiments"
+
+
+
+
+<!-- Inspired by the Card-Krueger paper, I have also utilized a DID analysis to check the effect of the minimum wage changes in Virginia on the employment level of food and drink service employers six and nine months later. North Carolina is used as a control, since they maintain the federal minimum wage. -->
+
+
+
+## Research Context
+
+- Taking inspiration from Card and Krueger, I have also utilized a DID analysis for this project
+
+- My observations are on the county level where Card and Krueger's observations were individual restaurants 
+
+- Like Card and Krueger, I used a neighbor state as the control
+
+- DID as a method came under scrutiny in 2019 from a paper published in The Review of Economics and Statistics
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+<!-- On July 24, 2009 the federal minimum wage was raised to $7.25. Both Virginia and North Carolina used the federal minimum wage until May 1st, 2021 when Virginia’s was raised to $9.50. This created a natural experiment to compare Virginia with its neighbor to see if the hike had a significant effect on the state’s employment level. DID regression takes a snapshot of both states before the treatment, and then a snapshot after the change. The difference in the dependent variable is compared with the control to see if there was a significant change (while controlling for other potential causal relationships). -->
+
+
+
+
+
+## Methodology
+
+### Initial Regression
+- The initial regression includes all available demographic information in my created dataset
+- The major question at this point is how good of a control North Carolina is for Virginia in each of these variables
+- At this point we do not know which variables contain useful information and which are just measuring differences between the states
+
+
+<!-- A potential issue with the original DID model is that it is unclear how good of a control North Carolina is for Virginia. If they are very dissimilar then the predictors could just be alluding to the differences in employment between the two states. If that is the case then those variables would just be doing the job of the Control variable and would be redundant and unduly pulling significance away from the treatment variable.  -->
+
+## Methodology
+
+### Variable Selection
+
+- Treatment (Minimum Wage Hike) is similar enough to control that if there are proxies taking significance away from Control, they would also be shifting significance away from the Minimum Wage Hike
+- The primary focus during the variable selection is to identify which variables are good predictors of employment and not just proxies for capturing the inherent differences between the two states
+- Those variables that do a good job at categorizing the two states and a poor job of predicting the employment level can likely be dropped from the model
+
+## Methodology
+
+### Variable Selection
+
+- The secondary goal of the variable selection is to identify whether Percent White or Percent Black is more relevant to the model since they cannot both be included because of their high inverse correlation (-96%)
+
+
+
+## Methodology
+
+### Variable Selection: Logistic Regression
+- Logistic regression is utilized to identify which variables are good at discriminating between the two states
+- If a variable is very effective at distinguishing between the two states it may not be as useful of a predictor of employment in the final model
+
+## Methodology
+
+### Variable Selection: Lasso Regression
+- Lasso regression adds a punishment term and forces weaker predictors of the dependent variable to zero
+- As the power of the punishment term increases the less useful predictors get pushed to zero first
+- This method is especially useful when working with small datasets because it is less sensitive to outliers
+- Between the Logistic and Lasso Regression we should get a good idea of which variables should be kept in the model for a stronger case
+
+
+
+
+
+<!-- DID Regression takes a snapshot of the target and control before and after the treatment, and then compares them. It evaluates the dependent variable to see if the target of the study significantly diverged from the control accounting for the timeframe, and the inherent differences between target and control. If the treatment variable is statistically significant then it means the treatment caused a measurable divergence in the subject of interest.  -->
+
+
+
+
+<!-- The first regressions include all demographic data without variable selection. Logistic and Lasso Regressions are then used to select variables that have the most direct effect on the employment level. The goal of the variable selection process I use is to deselect variables that are acting as proxies for the differences between the two states (i.e. the control variable). -->
+
+<!-- The correlation between percent white and percent black was too high (-96%) to include both without violating the multicollinearity assumption, so a secondary goal of the variable selection is to determine which of the two is a better predictor of the food and beverage employment level.  -->
+
+# Initial Regression
+
+---
+
+```{r plain regressions, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+
+
+# stargazer(PlainDID, Education, type = "latex", 
+#           title = "DID Models without Demographic Information", header=FALSE, covariate.labels = c("Time", "Control", "Minimum Wage Hike", "College Graduation Rate"), font.size  = "footnotesize", dep.var.labels = "Employment among Food and Beverage Retailers in VA and NC", column.labels = c("Plain DID", "With Education"), star.cutoffs = c(.1,.05,.01,.001), notes = "* p<0.1; ** p<0.05; *** p<0.01; ****p<0.001", notes.append = FALSE)
+
+
+
+```
+
+
+
+<!-- Using either 2021 or 2022 data, the regression immediately shows the Minimum Wage Hike to be non-significant. Which means, according to this initial model, the Minimum Wage Hike had no measurable effect on the employment level among food and beverage retailers.  -->
+
+ ![](Table4.png)
+
+
+```{r original regressions, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+
+
+# stargazer(lm.original.w, lm.original.b, lm.original.w.22, lm.original.b.22, type = "latex",
+#           add.lines = list(c("\\tiny")),
+#           title = "Original OLS Estimates of the Effect of Minimum Wage on the Employment Level in VA", header=FALSE, covariate.labels = c("Time", "Control", "Minimum Wage Hike", "Average age (grouped)", "Gender", "Percent White", "Percent Black",  "Percent Hisp/Latino", "Population Density", "College Graduation Rate"), font.size  = "tiny", dep.var.labels = "Employment among Food and Beverage Retailers in VA and NC", column.labels = c("2019-2021", "2019-2021", "2019-2022", "2019-2022"), star.cutoffs = c(.1,.05,.01,.001), notes = "* p<0.1; ** p<0.05; *** p<0.01; ****p<0.001", notes.append = FALSE)
+
+
+
+```
+
+## Initial Regression
+
+- The DID Treatment Variable "Minimum Wage Hike" was found to be not significant
+
+- The Control variable was found to be significant at the .05 threshold implying some of the employment level can be explained through the difference between the states
+
+
+# Variable Selection: Logistic Regression
+
+---
+
+ ![](Table5.png)
+
+## Variable Selection
+### Logistic Regression
+
+- Table 5 shows that average age, percent black, and percent white were not significant to the categorization 
+- College Graduation Rate was significant at the p<.05 level and the rest were highly significant
+- The Logistic regression had a 23% error rate in its prediction for all four versions.
+
+
+<!-- ## etc -->
+
+<!-- The next step is to use logistic regression to identify which variables are most useful to distinguish Virginia from North Carolina. Those variables that do a good job at categorizing the two states and a poor job of predicting the employment level can be dropped from the model. Their effect would be better captured in the Control variable. As Table 5 shows, all the listed variables for both years were found to be significant (p<.05) in predicting the difference between the two states, except average age, percent black, and percent white. The Logistic regression had a 23% error rate in its prediction for all four versions.  -->
+
+<!-- Once I determined which variables were good at parsing the difference between the states, I then ran a lasso regression to find the strongest determiners of the employment level. Lasso regressions shrink the model and force less important variables to zero relative to the lambda tuning parameter. This method is especially useful when working with small datasets because it is less sensitive to outliers. -->
+
+
+
+
+
+
+```{r logistic, echo=FALSE, fig.height=2, fig.width=2, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+# stargazer(Logistic.w, Logistic.b, Logistic.w.22, Logistic.b.22, 
+#           type = "latex", title = "Logistic Regression to Evaluate the Classification Power of the Variables", 
+#           header=FALSE, 
+#           covariate.labels = c("Average age (grouped)", "Gender", "Percent White", "Percent Black",  "Percent Hisp/Latino", "Population Density", "College Graduation Rate"), 
+#           dep.var.labels = "Control: North Carolina = 0, Virginia = 1", column.labels = c("2019-2021", "2019-2021", "2019-2022", "2019-2022"), star.cutoffs = c(.1,.05,.01,.001), notes = "* p<0.1; ** p<0.05; *** p<0.01; ****p<0.001", notes.append = FALSE)
+
+
+fourfoldplot(CM, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "Confusion Matrix")
+
+```
+
+
+
+# Variable Selection: Lasso Regression
+
+---
+
+```{r lambdas, echo=FALSE, fig.height=3, fig.width=3, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+Names <- c("Treatment", "Gender", "Time", "Pop_Density", "Perc_Black", "Perc_White", "Perc_Hisp", "Control", "Ave_Age", "Uni_Grad_Rt")
+
+options.clear <- options.sorted
+
+rownames(options.clear) <- Names
+
+colnames(options.clear) <- c("log(lambda)")
+
+grid.newpage()
+grid.table(round(options.clear, 2), theme = ttheme_minimal())
+
+
+
+
+```
+
+---
+
+
+```{r lasso, echo=FALSE, fig.height=8, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+
+  
+lbs_fun <- function(lasso.fit, ...) {
+  L <- length(lasso.fit$lambda)
+  x <- options.sorted$lambdas
+  xp <- c(-.3, -.3, -.15, -.4, 0,   -.2, -.2, -.2, -.15, 0)
+  y <- c(0,0,0,0,0,-100,-150,0,0, 0)
+  labs <- rownames(options.sorted)
+  text(x + xp, -55+ y, labels=labs, cex = .5, ...)
+  y.2 <- lasso.fit$beta[, L]
+  labs.2 <- names(y.2)
+  legend('left', legend=labs.2, col=1:6, lty=1, cex = 1)
+}
+
+
+plot(lasso.fit, xvar="lambda" )
+abline(v = options$lambdas)
+lbs_fun(lasso.fit)
+title("Lasso Regression Plot",  line = 3)
+
+```
+
+---
+
+```{r zoomed_w, echo=FALSE, fig.height=8, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+
+plot(lasso.fit.2, xvar="lambda")
+abline(v = options$lambdas)
+lbs_fun(lasso.fit.2)
+title("Lasso Plot with Percentage White (zoomed in: dropped gender)", line = 3)
+
+```
+
+---
+
+```{r zoomed_b, echo=FALSE, fig.height=8, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+plot(lasso.fit.3, xvar="lambda")
+abline(v = options$lambdas)
+lbs_fun(lasso.fit.3)
+title("Lasso Plot with Percentage Black (zoomed in: dropped gender)", line = 3)
+
+
+
+
+
+
+
+
+```
+
+
+
+
+<!-- Generally in Lasso Regression the weaker predictors will be pushed to 0 first, while the stronger ones will be pushed to 0 later. These results suggest that Percentage Black is a weaker predictor than Percentage White of the employment level among food and beverage retailers in North Carolina and Virginia. This creates a natural lambda selection at log(lambda) = 5 meaning we would drop every variable left of the double bar at log lambda = 5.27. This solves our colinearity problem between Percent White and Percent Black. Out of the other four variables we are dropping; Treatment, Gender, Time, and Population Density, only Population Density was significant in the original model. The DID variables will need to stay to maintain the assumptions of DID regression, but these results do allow us to drop Gender and Population Density from the final model.  -->
+
+## Variable Selection
+### Lasso Regression
+
+- These results suggest that Percentage Black is a weaker predictor than Percentage White of the employment level among food and beverage retailers
+
+- This creates a natural lambda selection at log(lambda) = 5.27 meaning we would drop every variable left of the double bar
+
+- This solves our multicolinearity violation between Percent White and Percent Black
+
+- Out of the other four variables to the left of the selected lambda; Treatment, Gender, Time, and Population Density, only Population Density was significant in the original model
+
+
+## Variable Selection
+### Final Model
+
+- The DID variables will need to stay to maintain the assumptions of DID regression
+- Variable Selection has allowed us to drop
+  * Gender
+  * Percent Hisp/Latino
+  * Population Density
+  * Percent Black
+
+
+# Results
+
+---
+
+
+
+
+ ![](Table8.png)
+
+
+
+## Results
+The variables that were weak predictors of employment, or that were acting as proxies for Control have been dropped; leaving us with a more predictive model that only holds the necessary variables shown in Table 8. In this final model, the Minimum Wage Hike is still shown to be not significant, meaning it has not effected the employment level in the state. Updating the employment data to 2022 shows the same result. 
+
+
+
+--- 
+
+```{r Filtered regressions, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+
+# stargazer(lm.original.w, lm.filtered,  lm.filtered.22, type = "latex", 
+#           title = "Final Model", header=FALSE, covariate.labels = c("Time", "Control", "Minimum Wage Hike", "Average age (grouped)", "Gender", "Percent White",  "Percent Hisp/Latino", "Population Density", "College Graduation Rate"), font.size  = "small", dep.var.labels = "Employment among Food and Beverage Retailers", column.labels = c("Original", "Final Model", "Final with 2022 employment"), star.cutoffs = c(.1,.05,.01,.001), notes = "* p<0.1; ** p<0.05; *** p<0.01; ****p<0.001", notes.append = FALSE)
+
+
+```
+
+## Results
+
+The remaining significant variables can be interpreted as follows:
+
+- Grouped Average Age: for every 5 years the average age of the population is older, the employment level among food and beverage retailers decreases by 471 positions, working out to be 94 positions per average year older.
+
+- Percent White: for each percentage point higher the employment among food and beverage retailers level decreases by 10 positions
+
+- College Graduation Rate: for every percentage point higher of people with a college degree, food and beverage retailer employment in the county increases by 88 jobs.
+
+- State difference: employment among food and beverage retailers in VA lowers by 664 when compared to NC.  
+
+
+
+## Discussion
+
+- Selection bias problem 
+
+- Longer lag effect
+
+- Virginia raised the minimum wage again to $12 on January 1 of this year and are planning two more: $13.50 in 2025 and $15 in 2026
+
+- A future study could collect the missing data manually and do another analysis since it appears there will be ample opportunity
+
+<!-- The most fundamental problem with this study is the possibility of a major selection bias. It's possible that by selecting counties that have the ability to report employment data, I am eliminating the only counties that have had adverse effects on their employment levels from the minimum wage hikes. Another open question is whether North Carolina is similar enough to Virginia for it to be a valid control, even after using variable selection. I did check into a very short lag effect (Q4 2021 to Q1 2022), however its possible it would take longer. Virginia is planning a third hike from $11 an hour to $12 on January 1, 2023 and then two more: $13.50 in 2025 and $15 in 2026. A future study could collect the missing data manually and do another analysis since it appears there will be ample opportunity.   -->
+
+
+
+## Sources
+
+Congressional Budget Office , &amp; Alsalam, N., The Effects on Employment and Family Income of Increasing the Federal Minimum Wage (n.d.).
+
+Difference-in-difference estimation. publichealth.columbia.edu. (n.d.). Retrieved January 16, 2023, from https://www.publichealth.columbia.edu/research/population-health-methods/difference-difference-estimation
+
+Doosa, G. (2021, June 14). The mathematical background of lasso and Ridge regression. Medium. Retrieved January 16, 2023, from https://medium.com/codex/mathematical-background-of-lasso-and-ridge-regression-23b74737c817#:~:text=Lasso%20or%20L1%20Regression%3A,directly%20performs%20feature%20selection%20also. 
+
+Ferman, B., &amp; Pinto, C. (2019). Inference in differences-in-differences with few treated groups and heteroskedasticity. The Review of Economics and Statistics, 101(3), 452–467. https://doi.org/10.1162/rest_a_00759 
+
+
+
+
+## Sources
+
+U.S. Bureau of Labor Statistics. (n.d.). QCEW data files. U.S. Bureau of Labor Statistics. Retrieved December 7, 2022, from https://www.bls.gov/cew/downloadable-data-files.htm 
+
+U.S. Census Bureau. (n.d.). Educational Attainment. Explore census data. Retrieved December 7, 2022, from https://data.census.gov/table?t=Educational%2BAttainment&amp;g=0400000US37%240500000&amp;y=2020&amp;tid=ACSST5Y2020.S1501 
+
+US Census Bureau. (2021, October 8). County population by characteristics: 2010-2019. Census.gov. Retrieved December 7, 2022, from https://www.census.gov/data/datasets/time-series/demo/popest/2010s-counties-detail.html 
+
+US Census Bureau. (2022, June 30). County population by characteristics: 2020-2021. Census.gov. Retrieved December 7, 2022, from https://www.census.gov/data/datasets/time-series/demo/popest/2020s-counties-detail.html
+
+## Sources
+
+Virginia Open Data Portal. Tyler Data &amp; Insights. (n.d.). Retrieved December 7, 2022, from https://data.virginia.gov/ 
+
+https://www.bls.gov/news.release/empsit.t01.htm
+
+# Thank You
+
+# Questions
+
+# Appendix
+
+## Density Plots
+
+Per the results we would expect to see that Average Age, Gender, Percent White, and Percent Black are all very similar between the two states. Whereas Percent Hisp/Latino, Population Density, College Graduation Rate, and the Employment Level are different. 
+
+
+## Age
+
+```{r age, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+#comparing the states to each other
+
+ggplot(Data.clean, aes(x = AAGE, fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME)) +
+  labs(x = "  Average Age 
+       (9 = 40-44, 10 = 45-49)")
+
+```
+
+## Gender
+
+```{r gender, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+ggplot(Data.clean, aes(x = GENDER, fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME)) +
+  labs(x = "Gender (1 = all women)")
+
+```
+
+## Percent White
+
+```{r w, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+
+ggplot(Data.clean, aes(x = PWHITE, fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME)) +
+  labs(x = "Percent White")
+
+```
+
+## Percent Black
+
+```{r b, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+ggplot(Data.clean, aes(x = PBLACK, fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME)) +
+  labs(x = "Percent Black")
+```
+
+## Percent Hispanic
+
+```{r Hisp, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+ggplot(Data.clean, aes(x = PHISP, fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME))  +
+  labs(x = "Percent Hisp/Latino")
+
+```
+
+## Population Density
+
+```{r pop, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+
+ggplot(Data.clean, aes(x = log(pop_density), fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME))  +
+  labs(x = "log(Population Density)")
+
+
+
+
+```
+
+## College Graduation Rate
+
+```{r education, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+ggplot(Data.clean, aes(x = log(uni_gradrt), fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME)) +
+  labs(x = "log(College Graduation Rate)")
+
+```
+
+## Employment Level
+
+```{r emp, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+
+ggplot(Data.observed, aes(x = log(av_qtr_employment), fill = STNAME)) + 
+  geom_histogram(alpha = 0.5, aes(y=after_stat(density))) +
+  geom_density(alpha=.2, aes(color =STNAME)) +
+  labs(x = "log(Employment Level)")
+
+
+
+
+
+```
+
+
+<!-- The main determiner of employment level is the health of the economy itself, captured by Demand in the DAG. Demand is greatly influenced by the interest rate, which is controlled for, because it would be the same for both states. Demand is also greatly influenced by the socioeconomics of the populace, which I have controlled for through demographics in my model. Socioeconomics is the main determinant of getting an education, which is directly tied to getting a job. -->
+
+## Research Design
+
+### Directional Acyclic Graph
+- The DAG contains my research assumptions for the major roots of the employment level in a typical western capitalist economy.
+- Grey are roots whose data is not available to me or are too abstract to include in a model
+- Blue are roots that I had data for and are accounted for in the model 
+
+![Unemployment DAG](DAG.png)
+
+
+## Research Design
+### Model Design
+- In order to run an appropriate regression all direct effects need to be controlled for if possible
+- This means education needs to be controlled for
+- It also means demographics needs to be included since it is a confounder through demand
+- In this way demographics will act as a proxy for demand
+
+![Unemployment DAG](DAG.png)
+
+
+
+
+<!-- Policy makers taking a Keynesian approach to the economy will encourage higher minimum wages and better social safety nets. Better social safety nets allow people to take time to look for a position that is a good “fit” that may reduce unemployment, or it may increase it because people are taking longer to look for a job. Some say that high minimum wage will encourage employers to introduce automation sooner than they otherwise would, but that is a dubious relationship that needs more direct study. The social safety net and automation are implicitly controlled for by taking snapshots that are within a three year period that doesn’t allow for a lot of change in these areas. The minimum wage’s effect on unemployment is what I am testing. -->
+
+## Research Context
+
+### Criticisms of Difference in Differences
+
+- A 2019 paper by Bruno Ferman and Cristine Pinto was published criticizing DID as a method
+
+- They challenged the prevailing assumption that having a large number of observations for each group satisfies the homoskedasticity requirement for multilinear regression
+
+- They also suggested  that if the treated group is much larger than the control, then DID would tend to under-reject the null hypothesis
+
+## Research Context
+
+### Criticisms of Difference in Differences
+- In both my paper and the Card-Krueger paper, the treated group is larger than the control, but mine is much closer:
+  * 331 NJ and 79 PA
+  * 94 VA and 79 NC
+
+## Research Context 
+
+### DID Assumptions
+
+* Intervention unrelated to outcome at baseline (allocation of intervention was not determined by outcome)
+* Treatment/intervention and control groups have Parallel Trends in outcome
+* Composition of intervention and comparison groups is stable for repeated cross-sectional design 
+* No spillover effects
+
+## Research Context
+
+### Lasso Regression
+\
+
+ ![](Lasso1.png)
+ ![](Lasso2.png)
+
+<!-- ## Data -->
+
+<!-- I have constructed a dataset of county level demographic data for Virginia and North Carolina from multiple sources. The employment level data for food and beverage retailers comes from the Bureau of Labor Statistics. The county college graduation rate is the total number of college graduates in the county from the US Census 2020 American Community Survey on Educational Attainment, divided by the county’s total population. The rest of the demographic data including total population, average age, gender proportion, race/ethnicity percentages, and the population density are all calculated from the County Population by Characteristics section from the US Census Bureau's website. -->
+
+
+## Data
+
+
+### Selection Bias Problem
+Because of the large number of missing counties in the employment level data, selection bias may influence the results. Counties that do not have the resources to collect employment level data may be more rural with a lower average income and may be more exposed to a minimum wage hike.
+
+
+
+## Data 
+
+### Bureau of Labor Statistics
+- Employment level data for food and beverage retailers (industry code: 445)
+    * 2019 Q1 
+    * 2021 Q4 
+    * 2022 Q1
+
+### US Census
+- County Land Area
+- Number of people with university degrees
+    * US Census American Community Survey on Educational Attainment
+    * 2020
+- All Other Demographics
+    * Calculated from County Population by Characteristics Dataset
+    * 2019 
+    * 2021
+
+
+
+<!-- Table 1 shows the descriptive statistics of the data used. North Carolina has 100 county equivalent areas and Virginia has 133, which gives 233 distinct counties. The dataset is comprised of two cross sectional snapshots representing Time = 0 and Time = 1 for each linear regression. The main regression consists of Employment snapshots from 2019 and 2021. The secondary regression, which is used to check for a lag effect, consists of snapshots from 2019 and 2022. All demographic data is also from 2019 and 2021, except for the county college graduation rate which is from 2020.  -->
+
+
+
+## Data
+
+
+
+
+```{r Employmenttable, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+kable(
+  tab_emp,
+  col.names = c("Subset", "N", "Mean", "StdDev", "Min", "Max"),
+  digits = 0,
+  caption = "Descriptive Statistics: Food Service Employment Level ($TotalVA = 133$ $TotalNC = 100$)"
+)
+
+```
+
+## Data
+
+```{r 2019, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Create table for year 2019
+kable(tab_Edu, 
+      col.names = c("Measure", "Mean", "StdDev", "Min", "Max"), 
+      digits = 2,
+      caption = "Descriptive Statistics: Education Data 2020 ($All 233 Counties$)")
+
+# Create table for year 2019
+kable(tab_2019, 
+      col.names = c("Measure", "Mean", "StdDev", "Min", "Max"), 
+      digits = 2,
+      caption = "Descriptive Statistics: Data for Year 2019 ($All 233 Counties$)")
+
+```
+
+## Data
+
+```{r 2021, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+# Create table for year 2021
+kable(tab_2021, 
+      col.names = c("Measure", "Mean", "StdDev", "Min", "Max"), 
+      digits = 2,
+      caption = "Descriptive Statistics: Data for Year 2021 ($All 233 Counties$)")
+```
+
+## Data
+
+### The DID Dummies
+
+- Control
+  * 1 for VA 
+  * 0 for NC
+- Time
+  * 0 for Initial 
+  * 1 for Final
+- Treatment
+  * 1 for the VA after the treatment
+  * 0 for all else
+
+<!-- The dataset is then set up for a DID regression by adding three dummy variables: Control, Time, and Treatment. The Control variable is used to denote the difference between the subject (Virginia) and the control (North Carolina). The Time variable is used to denote the snapshot of time before, and after the treatment (minimum wage hike(s)). The Treatment variable then an interaction term between Control and Time to denote the subject after the treatment. In this way, DID Regression attempts to isolate the effect of the treatment from the differences in the subject versus the control, as well as the differences in different time frames. -->
+
+ 
+
+---
+
+```{r Lassoed regressions, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+
+# stargazer(lm.original.w, lm.lassoed,  lm.test, type = "latex", 
+#           title = "Comparing the Original Regression to the Lassoed Regression", header=FALSE, covariate.labels = c("Time", "Control", "Minimum Wage Hike", "Average age (grouped)", "Gender", "Percent White",  "Percent Hisp/Latino", "Population Density", "College Graduation Rate"), font.size  = "small", dep.var.labels = "Employment among Food and Beverage Retailers", column.labels = c("Original", "Lassoed", "Control Test"), star.cutoffs = c(.1,.05,.01,.001), notes = "* p<0.1; ** p<0.05; *** p<0.01; ****p<0.001", notes.append = FALSE)
+
+
+```
+
+ ![](Table6.png)
+
+## Variable Selection
+### Percent Hisp/Latino
+
+- According to the Lasso threshold Percent Hisp/Latino should be a good predictor of employment, but after dropping the other weak variables from the model in Table 6, it actually gets significance shifted away from it
+
+- Of the variables listed as highly significant (p < .001) in table 5, Percent Hisp/Latino is the only one still in our model 
+
+- This implies that it is only good at predicting employment insofar as it is good at differentiating between North Carolina and Virginia
+
+- We should expect to see a large difference in concentrations of Hispanic populations in the two states
+
+---
+
+## Variable Selection
+### Percent Hisp/Latino and Population Density are Good Classifiers 
+
+- In Table 7 I've run a logistic regression on Percent Hisp/Latino and Population Density compared to all the other demographics 
+
+- Hisp and Pop got an error rate of 27% and all the others got an error rate of 38%
+
+
+---
+ ![](Table7.png)
+
+```{r second logistic, echo=FALSE, fig.height=3, fig.width=3, message=FALSE, warning=FALSE, paged.print=FALSE, results='asis'}
+
+
+fourfoldplot(Hisp.Pop, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "Hisp and Pop Density")
+
+fourfoldplot(Else, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "All Other Demographics")
+
+# stargazer(Logistic.Hisp.Pop, Logistic.Else, 
+#           type = "latex", title = "Hisp/Latino and Population Density are Good Classifiers", 
+#           header=FALSE, 
+#           covariate.labels = c("Percent Hisp/Latino", "Population Density", "Average age (grouped)", "Gender", "Percent White",  "College Graduation Rate"), 
+#           dep.var.labels = "Control: North Carolina = 0, Virginia = 1", column.labels = c("Hisp and Population", "Other"), star.cutoffs = c(.1,.05,.01,.001), notes = "* p<0.1; ** p<0.05; *** p<0.01; ****p<0.001", notes.append = FALSE)
+
+
+
+
+
+
+
+```
+
+
+## Variable Selection
+### Variables in Question: Gender
+
+- Gender was not found to be significant in the initial regression
+- Gender was shown to be a good classifier
+- Gender was below the lambda threshold in the Lasso regression
+- All three results imply Gender should be dropped in the final model
+
+## Variable Selection
+### Variables in Question: Percent Hisp/Latino
+
+- Percent Hisp/Latino was not found to be significant in the initial regression (p<.1)
+- Percent Hisp/Latino was shown to be good a classifier
+- Percent Hisp/Latino is directly on the lambda threshold
+- The first two items alone advise dropping it from the model and since its not definitively selected by the lasso as a good predictor it can be safely dropped
+
+## Variable Selection
+### Variables in Question: Population Density
+
+- Population Density was found to be significant in the initial regression
+- Population Density was shown to be a good classifier
+- Population Density was below the lambda threshold in the Lasso regression
+- These results imply that Population Density is only initially significant because it is proxying the difference of employment level between the two states
+
+
+
+
+
+
+
+
+
+

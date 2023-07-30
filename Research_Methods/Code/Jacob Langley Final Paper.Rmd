@@ -1,0 +1,862 @@
+---
+title: "Effect on the Employment Level by the 2021 VA Minimum Wage Hike"
+author: "Jacob Langley"
+date: '2022-06-26'
+header-includes:
+    - \usepackage{setspace}\doublespacing
+geometry: margin=2cm
+output: pdf_document
+---
+
+
+
+## Introduction 
+
+Minimum wage regularly makes headlines and is a hot button issue in politics. There are often calls to raise it to help working class people, or warnings that doing so would increase unemployment and actually end up hurting more people than it helps. The Congressional Budget Office released a report in 2019 that created predictions for three different minimum national wage hikes and their effect on the poverty level and employment. It predicted that an increase to $15 minimum wage would decrease the number of people below the poverty line by 1.3 million, with a two thirds chance employment would decrease anywhere between 0 and 3.7 million workers. It is vital that economics as a field is able to give an answer when someone asks to what degree minimum wage hikes affect employment. 
+
+## Research Context
+
+In 2021 David Card and Alan Krueger were awarded a Nobel Prize for their paper “Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania” that was published in 1994. As the name suggests, they examined New Jersey’s minimum wage hike in 1992 from 4.25 to 5.05 and its effect on unemployment. The paper used a difference in differences (DID) method to compare the employment level on either side of the NJ/PA border before and after the change. 
+	
+Inspired by the Card-Krueger paper, I have taken a closer look at a similar hike in Virginia to see if it effected the unemployment in the state six months later. The hike went into effect on May first, 2021, bringing the minimum wage from $7.25 to $9.50. Like Card and Kruger, my results imply the rise in the minimum wage did not affect the employment level in the state. 
+
+Card and Krueger called 410 fast-food restaurants on either side of the New Jersey – Pennsylvania border and collected many different data points of interest including number of employees, percent full time employees, starting wage and so on.  After the change they were able to follow up on just shy of 100 percent of the stores they called before the hike.  With the Pennsylvania stores as a control, they then used a difference in differences (DID) analysis to check the effect on employment. 
+
+I have also chosen to utilize a DID analysis to check the effect of the minimum wage change in Virginia on the employment level of food and drink service employers, by county. North Carolina is used as a control, since they use the federal minimum.  My DID coefficient, "Treatment", was found to be not significant which implies the change in the employment level was negligible after six months. 
+
+There are 236 county equivalent areas in Virginia and North Carolina:  136 from VA and 100 from NC. The employment level dataset I used is from the Bureau of Labor Statistics and is missing data from 50 counties in total: 34 from VA and 16 from NC. This leaves me with 186 counties to work with: 102 from VA and 84 from NC. After pooling cross sectional data from two dates this gives a sample size of 372. 
+
+In 2019 a paper by Bruno Ferman and Cristine Pinto was published with criticisms of DID as a method. In the paper, they called into question whether DID meets the homoskedasticity assumptions in a few ways. They suggested that the assumption that many observations for each group would satisfy the homoskedasticity condition is false. They also suggested that a large disparity in observations between the two groups would effect the rejection of the null hypothesis. Specifically, if the treated group is large, then DID would tend to under-reject the null hypothesis. In both this paper and the Card-Krueger paper, the treated group is larger than the control, but mine is much closer: 331 and 79 versus 102 and 84. 
+
+
+
+## Research Design
+
+Did the minimum wage hike on May 1, 2021 in Virginia lower the employment level among food service workers? 
+
+On July 24, 2009 the federal minimum wage was raised to \$7.25. Both Virginia and North Carolina used the federal minimum wage until May 1st, 2021 when Virginia’s was raised to \$9.50. This created a natural experiment to compare Virginia with its neighbor to see if the hike had a significant effect on the state’s employment level. Difference in differences regression takes a snapshot of both states before the treatment, and then a snapshot after the change. The difference in the dependent variable is compared with the control to see if there was a significant change (while controlling for other potential causal relationships).  
+
+
+![Unemployment DAG](DAG.png)
+
+
+The main determiner of employment level is the health of the economy itself, captured by Demand in the DAG. Demand is greatly influenced by the interest rate, which is controlled for, because it would be the same for both states. Demand is also greatly influenced by the socioeconomics of the populace, which I have controlled for through demographics in my model. Socioeconomics is the main determinant of getting an education, which is directly tied to getting a job. 
+	
+Policy makers taking a Keynesian approach to the economy, will encourage higher minimum wages and better social safety nets. Better social safety nets allow people to take time to look for a position that is a good “fit” that may reduce unemployment, or it may increase it because people are taking longer to look for a job. Some say that high minimum wage will encourage employers to introduce automation sooner than they otherwise would, but that is a dubious relationship that needs more direct study. The social safety net and automation are implicitly controlled for by taking snapshots that are within a three year period that doesn’t allow for a lot of change in these areas. The minimum wage’s effect on unemployment is what I am testing.
+
+
+
+## Data and Descriptive Statistics 
+ 
+
+All following information is by county. The employment level data for food service workers came from The Quarterly Census of Employment and Wages from the Bureau of Labor Statistics. It came in monthly data that I averaged into quarters and I used 2019 Q1 and 2021 Q4. The demographics data including age, race, and population size, I received from the National Cancer Institute. This dataset categorized age as groups with group 1 being ages 1 - 4, group 2 being ages 5 - 9 and so on. It was also was missing data for 2021 at the time of writing, so I mapped the 2020 data to 2021 and the 2018 data to 2019.  The education data was received from an American Community Survey dataset on Educational Attainment. 
+
+In addition to the five independent variables listed above, there are 3 technical dummy DID variables in the regression. The first of which is a dummy for time, 0 for 2019Q1 and 1 for 2021Q4. The next is the control dummy which holds 0 as NC, the control, and 1 for VA, the subject of interest. Then the Treatment variable is an interaction term between time and control which results in a 1 for any observation that is VA after the minimum wage change, and 0 for all other observations. 
+
+The following graphics compare the distributions of the different variables. Compared to VA, NC appears to have higher population density, lower graduation rates, but higher employment overall. 
+
+
+
+```{r setup, include = FALSE, message=FALSE, echo=FALSE,}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(dplyr)
+library(tidyr)
+library(sos)
+library(knitr)
+library(ggplot2)
+library(did)
+library(stargazer)
+
+#grabbing demographics from the population file 
+
+
+dem1969 <- read.fwf(file = "nc.1969_2020.19ages.txt", widths = c(4,2,5,2,1,1,1,2,8), header = FALSE, sep = ",",
+                    skip = 0, col.names = c("year","state","FIPS", "registry", "race", "origin", "sex", "age", "pop"), 
+                    buffersize = 2000)
+
+dem18and20 <- subset(dem1969, year == 2018 | year == 2020 , select= c(year,state,FIPS,race, sex, age, pop))
+
+#using years 2018 and 2020 since 2021 not available at time of writing
+
+
+dem18and20m <- subset(dem18and20, sex == 1, select= c(year,state,FIPS,race, sex, age, pop))
+dem18and20f <- subset(dem18and20, sex == 2, select= c(year,state,FIPS,race, sex, age, pop))
+
+#separate by sex, wanting to get a total pop column 
+
+
+dem18and20a <- merge(dem18and20m, dem18and20f, by=c("year","FIPS", "state","race","age"), all = T, suffixes = c("ma","fe")) 
+
+
+
+
+dem18and20a[is.na(dem18and20a)] = 0
+
+dem18and20a$tpop <- dem18and20a$popma + dem18and20a$popfe  #create total population column separated by age race year and FIPS
+#dem18and20a <- dem18and20f + dem18and20m
+
+keeps <- c("year","FIPS", "state","race","age", "tpop") 
+dem18and20long <- dem18and20a[ , keeps, drop = T]
+
+keeps2 <- c("year","FIPS", "tpop")      #removing gender specific columns
+dem18and20b <- dem18and20a[ , keeps2, drop = T]
+
+demsumpop <- aggregate(x = dem18and20b, by = list( dem18and20b$year, dem18and20b$FIPS), FUN = sum)
+#add all the tpops by year and FIPS so we have a total population for the county 
+
+
+keeps3 <- c("Group.1","Group.2", "tpop")
+demsumpop <- demsumpop[ , keeps3, drop = T]
+
+colnames(demsumpop) <- c("year", "FIPS", "total_pop")
+
+demsumpop
+
+colSums(is.na(demsumpop))
+
+keeps4 <- c("year","FIPS", "age", "tpop")
+demsumpopage <- dem18and20long[ , keeps4, drop = T]
+
+#removing state and race
+
+demsumpopage <- aggregate(x = demsumpopage, by = list( demsumpopage$age, demsumpopage$year, demsumpopage$FIPS), FUN = sum)
+
+keeps5 <- c("Group.1","Group.2", "Group.3", "tpop")
+demsumpopage <- demsumpopage[ , keeps5, drop = T]
+colnames(demsumpopage) <- c("age_group", "year", "FIPS", "aget")
+
+#correcting column names
+
+#combining with pop totals to get proportions 
+demsumpopage
+demsumpop
+
+DemSumAgeu <- merge(demsumpopage, demsumpop, by=c("year","FIPS"), all = T) 
+DemSumAgeu$ageperc <- DemSumAgeu$aget / DemSumAgeu$total_pop #proportions achieved
+#theres a 0.....
+DemSumAgeu$age_group <- DemSumAgeu$age_group +1
+
+DemSumAgeu$weighted <- DemSumAgeu$age_group * DemSumAgeu$ageperc #weighted percentaged acheived
+
+#weighted averages....
+
+demsumpopage <- aggregate(x = DemSumAgeu, by = list( DemSumAgeu$year, DemSumAgeu$FIPS), FUN = sum)
+#FIPS 37001 in 2018: aget should equal total population of Alamance county 166,516  if all is well
+
+keeps5a <- c("Group.1","Group.2", "aget", "weighted")
+Demographics <- demsumpopage[ , keeps5a, drop = T]
+colnames(Demographics) <- c("year", "FIPS", "total_pop", "averge_age")
+
+Demographics
+
+keeps6 <- c("year","FIPS", "race", "tpop")
+demsumpoprace <- dem18and20long[ , keeps6, drop = T]
+
+DemSumRace <- aggregate(x = demsumpoprace, by = list(demsumpoprace$race, demsumpoprace$year, demsumpoprace$FIPS), FUN = sum)
+
+keeps5 <- c("Group.1","Group.2", "Group.3", "tpop")
+DemSumRace <- DemSumRace[ , keeps5, drop = T]
+colnames(DemSumRace) <- c("race_group", "year", "FIPS", "racet")
+
+
+
+DemSumRaceu <- merge(Demographics, DemSumRace, by=c("year","FIPS"), all = T) 
+
+DemSumRaceu <- subset(DemSumRaceu, race_group == 1)
+
+DemSumRaceu$perc_white <- DemSumRaceu$racet / DemSumRaceu$total_pop
+
+Demographics <- merge(Demographics, DemSumRaceu, by=c("year","FIPS", "total_pop"), all = T)
+
+colnames(Demographics) <- c("year","FIPS", "total_pop", "average_age", "ignore1", "ignore2", "ignore3", "perc_white")
+
+Demographics
+
+keeps7 <- c("year","FIPS", "total_pop", "average_age", "perc_white")
+Demographics <- Demographics[ , keeps7, drop = T]
+
+NCdemographics <- Demographics[order(Demographics$FIPS, Demographics$year),]
+
+
+
+#repeated the same code to get VA data... if i were to do this again i would have 
+#gotten both states in the same step
+
+
+
+dem1969 <- read.fwf(file = "va.1969_2020.19ages.txt", widths = c(4,2,5,2,1,1,1,2,8), header = FALSE, sep = ",",
+                    skip = 0, col.names = c("year","state","FIPS", "registry", "race", "origin", "sex", "age", "pop"), 
+                    buffersize = 2000)
+
+dem18and20 <- subset(dem1969, year == 2018 | year == 2020 , select= c(year,state,FIPS,race, sex, age, pop))
+
+dem18and20m <- subset(dem18and20, sex == 1, select= c(year,state,FIPS,race, sex, age, pop))
+dem18and20f <- subset(dem18and20, sex == 2, select= c(year,state,FIPS,race, sex, age, pop))
+
+
+dem18and20a <- merge(dem18and20m, dem18and20f, by=c("year","FIPS", "state","race","age"), all = T, suffixes = c("ma","fe")) 
+
+
+dem18and20a[is.na(dem18and20a)] = 0
+
+dem18and20a$tpop <- dem18and20a$popma + dem18and20a$popfe  #create total population column separated by age race year and FIPS
+#dem18and20a <- dem18and20f + dem18and20m
+
+keeps <- c("year","FIPS", "state","race","age", "tpop") 
+dem18and20long <- dem18and20a[ , keeps, drop = T]
+
+keeps2 <- c("year","FIPS", "tpop")      #removing gender specific columns
+dem18and20b <- dem18and20a[ , keeps2, drop = T]
+
+demsumpop <- aggregate(x = dem18and20b, by = list( dem18and20b$year, dem18and20b$FIPS), FUN = sum)
+#add all the tpops by year and FIPS so we have a total population for the county 
+
+
+keeps3 <- c("Group.1","Group.2", "tpop")
+demsumpop <- demsumpop[ , keeps3, drop = T]
+
+colnames(demsumpop) <- c("year", "FIPS", "total_pop")
+
+demsumpop
+
+colSums(is.na(demsumpop))
+
+keeps4 <- c("year","FIPS", "age", "tpop")
+demsumpopage <- dem18and20long[ , keeps4, drop = T]
+
+#removing state and race
+
+demsumpopage <- aggregate(x = demsumpopage, by = list( demsumpopage$age, demsumpopage$year, demsumpopage$FIPS), FUN = sum)
+
+keeps5 <- c("Group.1","Group.2", "Group.3", "tpop")
+demsumpopage <- demsumpopage[ , keeps5, drop = T]
+colnames(demsumpopage) <- c("age_group", "year", "FIPS", "aget")
+
+#correcting column names
+
+#combining with pop totals to get proportions 
+demsumpopage
+demsumpop
+
+DemSumAgeu <- merge(demsumpopage, demsumpop, by=c("year","FIPS"), all = T) 
+DemSumAgeu$ageperc <- DemSumAgeu$aget / DemSumAgeu$total_pop #proportions achieved
+#theres a 0.....
+DemSumAgeu$age_group <- DemSumAgeu$age_group +1
+
+DemSumAgeu$weighted <- DemSumAgeu$age_group * DemSumAgeu$ageperc #weighted percentaged acheived
+
+#weighted averages....
+
+demsumpopage <- aggregate(x = DemSumAgeu, by = list( DemSumAgeu$year, DemSumAgeu$FIPS), FUN = sum)
+#FIPS 37001 in 2018: aget should equal total population of Alamance county 166,516  if all is well
+
+keeps5a <- c("Group.1","Group.2", "aget", "weighted")
+Demographics <- demsumpopage[ , keeps5a, drop = T]
+colnames(Demographics) <- c("year", "FIPS", "total_pop", "averge_age")
+
+Demographics
+
+keeps6 <- c("year","FIPS", "race", "tpop")
+demsumpoprace <- dem18and20long[ , keeps6, drop = T]
+
+DemSumRace <- aggregate(x = demsumpoprace, by = list(demsumpoprace$race, demsumpoprace$year, demsumpoprace$FIPS), FUN = sum)
+
+keeps5 <- c("Group.1","Group.2", "Group.3", "tpop")
+DemSumRace <- DemSumRace[ , keeps5, drop = T]
+colnames(DemSumRace) <- c("race_group", "year", "FIPS", "racet")
+
+
+
+DemSumRaceu <- merge(Demographics, DemSumRace, by=c("year","FIPS"), all = T) 
+
+DemSumRaceu <- subset(DemSumRaceu, race_group == 1)
+
+DemSumRaceu$perc_white <- DemSumRaceu$racet / DemSumRaceu$total_pop
+
+Demographics <- merge(Demographics, DemSumRaceu, by=c("year","FIPS", "total_pop"), all = T)
+
+colnames(Demographics) <- c("year","FIPS", "total_pop", "average_age", "ignore1", "ignore2", "ignore3", "perc_white")
+
+Demographics
+
+keeps7 <- c("year","FIPS", "total_pop", "average_age", "perc_white")
+Demographics <- Demographics[ , keeps7, drop = T]
+
+VAdemographics <- Demographics[order(Demographics$FIPS, Demographics$year),]
+
+Demographics <- rbind(NCdemographics,VAdemographics)
+
+Demographics
+
+
+#now importing size by square miles to get pop density...
+LandData <- read.csv("LND01.csv", header= TRUE)
+
+
+glimpse(LandData)
+
+LandDataNCVA <- subset(LandData, STCOU > 37000 & STCOU < 38000 | STCOU > 51000 & STCOU < 52000)
+
+keeps <- c("Areaname","STCOU", "LND010190D")
+LandDataNCVA <- LandDataNCVA[ , keeps, drop = T]
+
+colnames(LandDataNCVA) <- c("county", "FIPS", "Sq_mi")
+
+#Demographics <- merge(Demographics, LandDataNCVA, by=c("FIPS"), all = T)
+
+#Demographics$pop_density <- Demographics$total_pop / Demographics$Sq_mi
+
+Demographics
+
+#now for education attainment....
+#header has two lines...
+header <- scan("ACSST5Y2020.S1501_data_with_overlays_2022-05-02T141241.csv", nlines = 1, what = character(), sep = ",")
+NCeducationData <- read.csv("ACSST5Y2020.S1501_data_with_overlays_2022-05-02T141241.csv", skip = 2, header = FALSE)
+names(NCeducationData) <- header
+
+header <- scan("ACSST5Y2020.S1501_data_with_overlays_2022-06-10T122115.csv", nlines = 1, what = character(), sep = ",")
+VAeducationData <- read.csv("ACSST5Y2020.S1501_data_with_overlays_2022-06-10T122115.csv", skip = 2, header = FALSE)
+names(VAeducationData) <- header
+
+EducationData <- rbind(NCeducationData, VAeducationData)
+
+EducationData <- separate(EducationData, 1, into = c(NA, "FIPS"), sep = "US", remove = T)
+
+#totalling # of graduates
+EducationData$uni_gradt <- EducationData$S1501_C01_005E + EducationData$S1501_C01_018E + EducationData$S1501_C01_021E + EducationData$S1501_C01_024E + EducationData$S1501_C01_027E
+
+keeps <- c("FIPS","uni_gradt")
+EducationData <- EducationData[ , keeps, drop = T]
+
+EducationData
+
+#Demographics <- merge(Demographics, EducationData, by=c("FIPS"), all = T)
+
+#Demographics$uni_gradrt <- Demographics$uni_gradt / Demographics$total_pop
+
+Demographics
+
+colSums(is.na(Demographics))
+
+#importing employment data for food services industry....
+
+employment2019 <- read.csv("2019 445 Food and beverage stores.csv")
+employment2021 <- read.csv("2021 445 Food and beverage stores.csv")
+
+keeps <- c("area_fips","own_code", "year", "qtr", "industry_title", "month1_emplvl", "month2_emplvl", "month3_emplvl")
+employment2019 <- employment2019[ , keeps, drop = T]
+employment2021 <- employment2021[ , keeps, drop = T]
+
+#getting only the employment data for NC and VA
+
+employment2019NCVA <- subset(employment2019, area_fips > 37000 & area_fips < 38000 | area_fips > 51000 & area_fips < 52000)
+employment2021NCVA <- subset(employment2021, area_fips > 37000 & area_fips < 38000 | area_fips > 51000 & area_fips < 52000)
+employment2019NCVAQ1 <- subset(employment2019NCVA, qtr == 1 & own_code == 5) #own_code 5 is private institutions
+employment2021NCVAQ4 <- subset(employment2021NCVA, qtr == 4 & own_code == 5) 
+
+#treatment dummy: VA 2021 gets a 1
+employment2019NCVAQ1$treatment <- 0
+
+employment2021NCVAQ4$treatment <- employment2021NCVAQ4$area_fips
+
+employment2021NCVAQ4$treatment[employment2021NCVAQ4$area_fips < 51000] <- 0
+employment2021NCVAQ4$treatment[employment2021NCVAQ4$area_fips > 51000] <- 1
+
+#binary for what state it is: control
+employment2019NCVAQ1$control <- employment2019NCVAQ1$area_fips
+
+employment2019NCVAQ1$control[employment2019NCVAQ1$area_fips < 51000] <- 0
+employment2019NCVAQ1$control[employment2019NCVAQ1$area_fips > 51000] <- 1
+
+employment2021NCVAQ4$control <- employment2021NCVAQ4$area_fips
+
+employment2021NCVAQ4$control[employment2021NCVAQ4$area_fips < 51000] <- 0
+employment2021NCVAQ4$control[employment2021NCVAQ4$area_fips > 51000] <- 1
+
+#binding 2019Q1 & 2021Q4
+
+EmploymentData <- rbind(employment2019NCVAQ1, employment2021NCVAQ4)
+
+
+EmploymentData$av_qtr_employment  <- rowMeans(subset(EmploymentData, select = c("month1_emplvl", "month2_emplvl", "month3_emplvl")), na.rm = TRUE)
+
+
+
+
+#im noticing a lot of 0s in the data....
+
+EmploymentData$year_dem <- EmploymentData$year - 1
+
+keeps <- c("area_fips", "year_dem", "year", "industry_title","av_qtr_employment", "treatment", "control" )
+EmploymentData <- EmploymentData[ , keeps, drop = T]
+
+
+colnames(EmploymentData) <- c("FIPS", "year", "year_u", "industry_title","av_qtr_employment", "treatment", "control" )
+
+Data <- merge(EmploymentData, Demographics, by = c("FIPS", "year"), all = T )
+
+#putting in the non-year-dependant constants 
+Data <- merge(Data, LandDataNCVA, by=c("FIPS"), all = T)
+Data <- merge(Data, EducationData, by=c("FIPS"), all = T)
+
+Data$pop_density <- Data$total_pop / Data$Sq_mi
+Data$uni_gradrt <- Data$uni_gradt / Data$total_pop
+
+
+
+
+
+#reorder columns
+keeps <- c("county", "FIPS", "year_u", "industry_title","av_qtr_employment", "year", "total_pop", "average_age", "perc_white",  "Sq_mi", "pop_density", "uni_gradt", "uni_gradrt", "treatment", "control" )
+Data <- Data[ , keeps, drop = F]
+
+dim(Data)
+
+colSums(Data == 0, na.rm = T)   
+
+
+
+n_distinct(Data$FIPS) #264
+NonZeroData <- Data[Data$av_qtr_employment != 0,]
+n_distinct(NonZeroData$FIPS) #220
+
+#we lose 44 observations if we remove the 0 observations for employment level 
+
+#N, mean, std.dev, min and max 
+
+#findFn("computeEstimate")
+NewData <- Data 
+
+NewData$av_qtr_employment[NewData$av_qtr_employment == 0] <- NA
+
+Data$treatment <- as.numeric(unlist(Data$treatment))
+NewData$treatment <- as.numeric(unlist(NewData$treatment))
+
+
+
+
+
+
+DatNA <- NewData[is.na(NewData$av_qtr_employment),]
+
+
+
+find.numeric <- sapply(DatNA, is.numeric)
+colMeans(DatNA[, find.numeric], na.rm = T)
+
+
+NewData <- separate(NewData, county,into = c("county", "state"), sep = ", " )
+
+ggplot(data = NewData, mapping = aes(x=pop_density, y = av_qtr_employment)) + 
+  geom_point(aes(colour=state))
+
+ggplot(data = NewData, mapping = aes(x=uni_gradrt, y = av_qtr_employment)) + 
+  geom_point(aes(colour=state))
+
+#cleaning data: checking i have all the observations i should have 
+
+DirtyData <- Data 
+
+FIPS <- read.csv("fips_codes.csv", header= T)
+
+dim(FIPS) #235 x2 = 470
+dim(DirtyData) #501?? bunch of trash, no wonder i have so many 0s
+
+colSums(DirtyData == 0, na.rm = T)   
+
+
+
+DirtyData$FIPS <- as.numeric(unlist(DirtyData$FIPS))
+
+
+CleanData <- right_join(DirtyData, FIPS, by = "FIPS")
+
+colSums(CleanData == 0, na.rm = T)
+
+colSums(is.na(DirtyData))
+
+colSums(is.na(CleanData))
+
+
+n_distinct(CleanData$FIPS) #236? 
+n_distinct(FIPS$FIPS) #236.
+NonZeroData <- CleanData[CleanData$av_qtr_employment != 0,]
+n_distinct(NonZeroData$FIPS) #199
+
+#37 0s... 
+
+#nothing i can do about the 37 0s in the data set and i fixed the NA issue by putting the constant data in last...
+#so now we can run the regression... DID method..
+
+CleanData$av_qtr_employment[CleanData$av_qtr_employment == 0] <- NA #replacing the data holes with NAs
+
+colSums(CleanData == 0, na.rm = T) # looks great
+
+#need to make a gname column... first year that an observation got treated... 
+#i want the period to match when the group would have been treated accurately i think to get the balance right
+#so 2019Q1 = p1 so 2020Q4 = p8 so 2021Q4 = p12
+#2021 Q1 is when treatment was administered: p9
+#so...
+CleanedData <- CleanData %>% drop_na(average_age)
+
+colSums(is.na(CleanedData)) #no more NAs, except the holes in my employment data 
+
+
+
+#CleanedData$time <- CleanedData$year_u
+
+#CleanedData$time[CleanedData$year_u == 2019] <- 1
+#CleanedData$time[CleanedData$year_u == 2021] <- 12
+
+#CleanedData$group <- CleanedData$control
+
+
+#CleanedData$group[CleanedData$control == 1 & CleanedData$treatment == 0 ] <- 1
+#CleanedData$group[CleanedData$control == 1] <- 9
+
+#CleanedData$group <- as.numeric(unlist(CleanedData$group))
+
+
+
+
+#out <- att_gt(yname = "av_qtr_employment", tname = "time", idname = "FIPS", gname = "group", xformla = ~ average_age + perc_white + pop_density + uni_gradrt, data = CleanedData, panel =  F,  print_details = T, est_method = "reg" )
+#  summary(out)
+
+#doesnt work for some reason, says "No pre-treatment periods to test" 
+#but it does give this
+#Group-Time Average Treatment Effects:
+#  Group Time  ATT(g,t) Std. Error [95% Pointwise  Conf. Band] 
+#    9   12 -393.8754   899.3526       -2017.183    1229.432
+
+#switching tactics... 
+#repurposing.... 
+
+CleanedData$time <- CleanedData$year_u
+
+
+CleanedData$time[CleanedData$year_u == 2019] <- 0
+CleanedData$time[CleanedData$year_u == 2021] <- 1
+
+CleanedData$time <- as.numeric(unlist(CleanedData$time))
+CleanedData$control <- as.numeric(unlist(CleanedData$control))
+
+
+CleanedData <- CleanedData[order(CleanedData$FIPS, CleanedData$time),]
+
+CleanedData$did = CleanedData$time * CleanedData$control
+
+colSums(is.na(CleanedData))
+
+
+didreg = lm(av_qtr_employment ~ time + control + did + average_age + perc_white + pop_density + uni_gradrt, data = CleanedData)
+
+summary(didreg)
+
+all(CleanData$treatment == CleanData$did) #oh 
+
+n_distinct(CleanedData$FIPS) 
+
+#232 - 46 = 186 counties
+#186 x2 = 372
+
+n_distinct(FIPS$FIPS) #*2 = 472 so in total im missing 50 counties out of 236
+
+
+n_distinct(CleanData$FIPS) #236
+
+
+colSums(employment2019NCVAQ1 == 0, na.rm = F)   #50 0s
+
+colSums(employment2021NCVAQ4 == 0, na.rm = F)   #49 0s 
+
+
+NCem <- subset(employment2019NCVAQ1, area_fips > 37000 & area_fips < 38000)
+VAem <- subset(employment2019NCVAQ1, area_fips > 51000 & area_fips < 52000)
+colSums(NCem == 0, na.rm = F)   #16
+colSums(VAem == 0, na.rm = F)   #34 
+#16 missing from NC, #34 missing from VA, 50 in total 
+
+NCem <- subset(employment2021NCVAQ4, area_fips > 37000 & area_fips < 38000)
+VAem <- subset(employment2021NCVAQ4, area_fips > 51000 & area_fips < 52000)
+colSums(NCem == 0, na.rm = F)   #15
+colSums(VAem == 0, na.rm = F)   #34 
+#15 missing from NC, #34 missing from VA, 49 in total 
+
+NCfips <- subset(FIPS, FIPS > 37000 & FIPS < 38000)
+VAfips <- subset(FIPS, FIPS > 51000 & FIPS < 52000)
+
+n_distinct(NCfips$FIPS) #100
+n_distinct(VAfips$FIPS) #136
+
+100 - 16 # 84 counties from NC
+136 - 34 # 102 counties from VA
+
+
+tab_01 = data.frame(
+  Measure = c("Employment", "Average age (grouped)", "Percentage White",  "Population Density", "College Graduation Rate"),
+  
+  Count =  c(sum(!is.na(CleanedData$av_qtr_employment))/2, sum(!is.na(CleanedData$average_age))/2, sum(!is.na(CleanedData$perc_white))/2, sum(!is.na(CleanedData$pop_density))/2, sum(!is.na(CleanedData$uni_gradrt))/2), 
+  
+  N =  c(sum(!is.na(CleanedData$av_qtr_employment)), sum(!is.na(CleanedData$average_age)), sum(!is.na(CleanedData$perc_white)), sum(!is.na(CleanedData$pop_density)), sum(!is.na(CleanedData$uni_gradrt))), 
+  
+  Mean  = c(mean(CleanedData$av_qtr_employment, na.rm = T), mean(CleanedData$average_age, na.rm = T), mean(CleanedData$perc_white, na.rm = T),
+            mean(CleanedData$pop_density, na.rm = T), mean(CleanedData$uni_gradrt, na.rm = T)),
+  Standard_Deviation = c(sd(CleanedData$av_qtr_employment, na.rm = T), sd(CleanedData$average_age, na.rm = T),
+                         sd(CleanedData$perc_white, na.rm = T), sd(CleanedData$pop_density, na.rm = T), sd(CleanedData$uni_gradrt, na.rm = T)),
+  Min = c(min(CleanedData$av_qtr_employment, na.rm = T), min(CleanedData$average_age, na.rm = T), min(CleanedData$perc_white, na.rm = T),
+          min(CleanedData$pop_density, na.rm = T), min(CleanedData$uni_gradrt, na.rm = T)),
+  Max = c(max(CleanedData$av_qtr_employment, na.rm = T), max(CleanedData$average_age, na.rm = T), max(CleanedData$perc_white, na.rm = T),
+          max(CleanedData$pop_density, na.rm = T), max(CleanedData$uni_gradrt, na.rm = T)))
+
+tab_01
+
+
+
+
+DatNA <- CleanData[is.na(CleanData$av_qtr_employment),]
+
+
+
+find.numeric <- sapply(DatNA, is.numeric)
+colMeans(DatNA[, find.numeric], na.rm = T)
+
+tab_02 = data.frame(
+  Measure = c("Average age (grouped)", "Percentage White",  "Population Density", "College Graduation Rate"),
+  Count =  c(sum(!is.na(DatNA$average_age))/2, sum(!is.na(DatNA$perc_white))/2,
+         sum(!is.na(DatNA$pop_density))/2, sum(!is.na(DatNA$uni_gradrt))/2),
+  N =  c(sum(!is.na(DatNA$average_age)), sum(!is.na(DatNA$perc_white)),
+         sum(!is.na(DatNA$pop_density)), sum(!is.na(DatNA$uni_gradrt))),
+  Mean  = c(mean(DatNA$average_age, na.rm = T), mean(DatNA$perc_white, na.rm = T),
+            mean(DatNA$pop_density, na.rm = T), mean(DatNA$uni_gradrt, na.rm = T)),
+  Standard_Deviation = c(sd(DatNA$average_age, na.rm = T),
+                         sd(DatNA$perc_white, na.rm = T), sd(DatNA$pop_density, na.rm = T), sd(DatNA$uni_gradrt, na.rm = T)),
+  Min = c(min(DatNA$average_age, na.rm = T), min(DatNA$perc_white, na.rm = T),
+          min(DatNA$pop_density, na.rm = T), min(DatNA$uni_gradrt, na.rm = T)),
+  Max = c(max(DatNA$average_age, na.rm = T), max(DatNA$perc_white, na.rm = T),
+          max(DatNA$pop_density, na.rm = T), max(DatNA$uni_gradrt, na.rm = T)))
+
+CleanData$bias <- CleanData$av_qtr_employment
+CleanData$bias[CleanData$bias > 0] <- "Observed"
+CleanData$bias <- replace_na(CleanData$bias, "Missing" )
+
+CleanNC <- subset(CleanData, State == "NC")
+CleanVA <- subset(CleanData, State == "VA")
+
+didreg2 = lm(av_qtr_employment ~ time + control + did + average_age + perc_white + total_pop  + uni_gradt, data = CleanedData)
+
+
+regreg = lm(av_qtr_employment ~ control + average_age + perc_white + pop_density + uni_gradrt, data = CleanedData)
+
+
+```
+
+
+
+
+
+
+```{r tables, echo= FALSE, warning=FALSE, message = FALSE}
+
+kable(
+  tab_01,
+  col.names = c("Measure", "#", "N", "Mean", "Standard Deviation", "Min", "Max"),
+  digits = 2,
+  caption = "Descriptive Statistics of Minimum Wage DID Study of Virgina & North Carolina ($n=372$)"
+)
+```
+
+
+
+```{r tables2, echo= FALSE, warning=FALSE, message = FALSE}
+kable(
+  tab_02,
+  col.names = c("Measure", "#", "N", "Mean", "Standard Deviation", "Min", "Max"),
+  digits = 2,
+  caption = "Means of Variables Assigned as 0s in the Employment Level Dataset ($n=92$)")
+```
+
+
+\newpage
+
+## Figures
+
+
+```{r states, echo=FALSE, warning=FALSE, results='hide', message = FALSE, fig.width = 3, fig.height = 2.25}
+#comparing the states to each other
+
+ggplot(CleanData, aes(x = average_age, fill = State)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =State)) +
+  labs(x = "  Average Age 
+       (9 = 40-44, 10 = 45-49)")
+#similar-ish
+
+
+ggplot(CleanData, aes(x = perc_white, fill = State)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =State)) +
+  labs(x = "Percentage race = white")
+#similar
+```
+  
+  
+  
+
+
+```{r states2, echo=FALSE, warning=FALSE, results='hide', message = FALSE, fig.width = 3, fig.height = 2.25}
+ggplot(CleanData, aes(x = log(pop_density), fill = State)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =State))  +
+  labs(x = "log(Population Density)")
+#VA has lower pop density 
+
+
+ggplot(CleanData, aes(x = log(uni_gradrt), fill = State)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =State)) +
+  labs(x = "log(College Graduation Rate)")
+#NC has a lower graduation rate 
+```
+  
+  
+  
+
+```{r states3, echo=FALSE, warning=FALSE, results='hide', message = FALSE, fig.width = 3, fig.height = 2.25}
+ggplot(CleanData, aes(x = log(av_qtr_employment), fill = State)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =State)) +
+  labs(x = "log(Employment Level)")
+#VA has lower employment overall 
+
+
+```
+
+50 counties, out of 236 in total, had 0s for the employment level. This left me 186 counties to work with.  The missing counties trended older, less densely populated, and less educated, which implies a strong selection bias. It could be the case that these more rural counties are hit harder by a higher minimum wage, and so in them the employment level was indeed affected by the minimum wage increase. If the dataset was complete, I would be able to have stronger conclusion for the analysis. Here are graphics comparing the demographics from the counties I do have food service employment level on, versus the ones that are missing. 
+
+\newpage
+
+```{r missing, echo=FALSE, warning=FALSE, results='hide', message = FALSE,   fig.width = 3, fig.height = 2.25}
+#comparing the missing data to the observed data 
+
+ggplot(CleanNC, aes(x = average_age, fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias)) +
+  labs(x = "  Average Age (grouped)", title = "North Carolina") 
+#older
+
+ggplot(CleanVA, aes(x = average_age, fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias)) +
+  labs(x = "  Average Age (grouped)", title = "Virgina")
+#slightly older
+```
+  
+  
+
+```{r missing2, echo=FALSE, warning=FALSE, results='hide', message = FALSE, ,   fig.width = 3, fig.height = 2.25}
+ggplot(CleanNC, aes(x = perc_white, fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias)) +
+  labs(x = "Percentage race = white", title = "North Carolina")
+#less white, more white
+
+
+
+ggplot(CleanVA, aes(x = perc_white, fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias)) +
+  labs(x = "Percentage race = white", title = "Virgina")
+#similar
+```
+  
+  
+
+```{r missing3, echo=FALSE, warning=FALSE, results='hide', message = FALSE, ,   fig.width = 3, fig.height = 2.25}
+ggplot(CleanNC, aes(x = log(pop_density), fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias)) +
+  labs(x = "log(Population Density)", title = "North Carolina")
+#less dense 
+  
+
+ggplot(CleanVA, aes(x = log(pop_density), fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias)) +
+  labs(x = "log(Population Density)", title = "Virgina")
+#less dense 
+```
+  
+  
+
+```{r missing4, echo=FALSE, warning=FALSE, results='hide', message = FALSE, ,   fig.width = 3, fig.height = 2.25}
+ggplot(CleanNC, aes(x = log(uni_gradrt), fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias))+
+  labs(x = "log(College Graduation Rate)", title = "North Carolina")
+#??
+
+ggplot(CleanVA, aes(x = log(uni_gradrt), fill = bias)) + 
+  geom_histogram(alpha = 0.5, aes(y=..density..)) +
+  geom_density(alpha=.2, aes(color =bias))+
+  labs(x = "log(College Graduation Rate)", title = "Virgina")
+#less educated
+
+
+```
+
+\newpage
+
+## Results
+
+```{r regressions, echo= FALSE, warning=FALSE, message = FALSE, results = "asis"}
+
+stargazer(didreg, didreg2, regreg, type = "latex", 
+          title = "DID and OLS Estimates of the Effect of Minimum Wage on the Employment Level in VA", 
+          header=FALSE, covariate.labels = 
+            c("Time (dummy)","Control (dummy)", "Treatment (dummy)", "Average Age (grouped)", "Percentage White", "Population Density", "College Graduation Rate", "Total Population", "Total College Graduations"))
+
+```
+
+
+The first regression is the focus of the paper. It shows that both the point in time and the treatment DID interaction term are not significant. If time is insignificant, then it means that there was no event or natural change that effected the employment level in both states when comparing the two dates. This is good because it means the two dates did a good job of skipping over the 2020 recession. Treatment is the variable of interest in the study: since it is not significant it indicates that the minimum wage hike in May of 2021 in VA did not affect the state's unemployment rate (ignoring selection bias). 
+
+We can see per the control coefficient, that being in VA rather than NC decreases the employment level by 556 regardless of time. Average age shows that that if a county's average age increases by four years (one grouping) the employment level decreases by almost 600. This would most likely be due to more retired people in the county not in the work force. For each percentage point a county is more white, employment lowers by about 11 workers. For each percentage the education rate is higher, the employment level goes up by 100 workers.
+  
+ The second regression uses the total population and total number of graduates instead of the rates, and they just eat up the effect of the other variables.
+  
+ The third regression drops the non-significant variables from the equation which makes being in VA have a decrease of almost 600 to the employment.
+
+
+## Conclusion 
+
+Since the Treatment coefficient was found to be non-significant, the analysis leaves open the possibility that the minimum wage hike on May 1, 2021 did not affect the employment level in the state. There are other things that would need to be accounted for before making a stronger claim that it did or did not affect it. The first of which is selection bias: the missing data points would need to be filled in to get a definitive significance level. Additionally it's possible that minimum wage changes have a lag effect on the employment level and do not negatively effect it until a year later or more. Virginia's minimum wage rose again on Jan 1, 2022 to $11 per hour, so a follow up study with a further out date would have to contend with that. However, it may be as simple as taking a snapshot of late 2022 instead of late 2021 and treat the two raises as one large treatment. A final note that may invalidate the study is if North Carolina is not a good control group for Virginia in the first place. 
+
+\newpage
+
+## Sources
+
+Congressional Budget Office , &amp; Alsalam, N., The Effects on Employment and Family Income of Increasing the Federal Minimum Wage (n.d.).   
+
+
+Ferman, B., &amp; Pinto, C. (2019). Inference in differences-in-differences with few treated groups and heteroskedasticity. The Review of Economics and Statistics, 101(3), 452–467. https://doi.org/10.1162/rest_a_00759   
+
+
+Minimum wage in Virginia. Foreign USA. (2022, June 23). Retrieved from https://foreignusa.com/minimum-wage-in-virginia/   
+
+
+National Cancer Institute . (2022, February). Download U.S. population data - seer population data. SEER. Retrieved June 26, 2022, from https://seer.cancer.gov/popdata/download.html   
+
+
+Neumark, D., &amp; Wascher, W. (2000). Minimum wages and employment: A case study of the fast-food industry in New Jersey and Pennsylvania: American Economic Review, 90(5), 1362–1396. https://doi.org/10.1257/aer.90.5.1362   
+
+
+U.S. Bureau of Labor Statistics, Quarterly Census of Employment and Wages (2020). Washington, DC. 
+US Census Bureau. (2021, December 16). USA counties: 2011. Census.gov. Retrieved June 26, 2022, from https://www.census.gov/library/publications/2011/compendia/usa-counties-2011.html   
+
+
+US Census Bureau. (2021, October 8). Educational attainment in the United States: 2020. Census.gov. Retrieved June 26, 2022, from https://www.census.gov/data/tables/2020/demo/educational-attainment/cps-detailed-tables.html   
+
+
+US Census Bureau. (2022, March 16). American National Standards Institute (ANSI) and Federal Information Processing Series (FIPS) codes. Census.gov. Retrieved June 26, 2022, from https://www.census.gov/library/reference/code-lists/ansi.html 
